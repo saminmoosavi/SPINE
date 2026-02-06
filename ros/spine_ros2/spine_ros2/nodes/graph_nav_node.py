@@ -3,22 +3,25 @@ import enum
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
-import rospy
-import tf
-from actionlib_msgs.msg import GoalID, GoalStatusArray
+import rclpy
+from rclpy.node import Node
+from rclpy.action import ActionClient
+
+import tf2_ros
+from tf2_ros import TransformException
+
+from action_msgs.msg import GoalStatusArray  # ROS2 action status array
+from nav2_msgs.action import NavigateToPose  # ROS2 Nav2 action
+from std_msgs.msg import Header
+from scipy.spatial.transform import Rotation
+
 from geometry_msgs.msg import Pose, PoseStamped
 from spine.mapping.graph_util import GraphHandler
-from spine_ros.srv import (
+from spine_interface_ros2.srv import (
     AddNode,
-    AddNodeRequest,
-    AddNodeResponse,
     Task,
-    TaskRequest,
-    TaskResponse,
+
 )
-from move_base_msgs.msg import MoveBaseActionGoal
-from scipy.spatial.transform import Rotation
-from std_msgs.msg import Header
 
 
 def unit_vector(vector):
@@ -38,70 +41,124 @@ class NAV_STATUS(enum.Enum):
     LOST = 9
 
 
-class GraphNavNode:
+class GraphNavNode(Node):
     ZERO_VEC_2D = np.zeros(
         2,
     )
     DEFAULT_GRAPH = "/home/zac/projects/dcist/catkin_ws/src/llm-planning/data/flooded_grounds_coords.json"
 
     def __init__(self) -> None:
-        self.ns = rospy.get_param("~ns", default="/")
-        self.robot_frame = rospy.get_param("~robot_frame", "/husky/base_link")
-        self.world_frame = rospy.get_param("~world_frame", "/world")
-        self.max_goal_dist_m = rospy.get_param("~max_goal_dist_m", 9.0)
+        super().__init__("graph_nav_node")
 
-        self.goal_reached_lin_tol = rospy.get_param("~goal_reached_lin_tol", 0.5)
+        self.declare_parameter("ns", "/")
+        self.ns = self.get_parameter("ns").value
+        self.declare_parameter("nav2_action", "navigate_to_pose")  # Nav2 action name
 
-        pub_topic = rospy.get_param("~pub", f"/{self.ns}/move_base/goal")
-        cancel_topic = rospy.get_param("~cancel", f"/{self.ns}/move_base/cancel")
-        graph = rospy.get_param("~graph")  # , self.DEFAULT_GRAPH)
+        self.declare_parameter("robot_frame", "/husky/base_link")
+        self.declare_parameter("world_frame", "/world")
+        self.declare_parameter("max_goal_dist_m", 9.0)
 
+        self.declare_parameter("goal_reached_lin_tol", 0.5)
+
+        # self.declare_parameter("pub", f"/{self.ns}/move_base/goal") # Not used in ros2
+        # self.declare_parameter("cancel", f"/{self.ns}/move_base/cancel") # not used in ros2
+        self.declare_parameter("graph","")  # , self.DEFAULT_GRAPH)
+
+        self.ns = self.get_parameter("ns").value
+        self.robot_frame = self.get_parameter("robot_frame").value
+        self.world_frame = self.get_parameter("world_frame").value
+        self.max_goal_dist_m = float(self.get_parameter("max_goal_dist_m").value)
+        self.goal_reached_lin_tol = float(self.get_parameter("goal_reached_lin_tol").value)
+
+        # # Keep these variables, even though ROS2 version uses an ActionClient instead of publishers
+        # pub_topic = self.get_parameter("pub").value
+        # cancel_topic = self.get_parameter("cancel").value
+        graph = self.get_parameter("graph").value
         # for navigation
-        object_goal_angle_tol = rospy.get_param("~object_goal_angle_deg", 30)
+        self.declare_parameter("object_goal_angle_deg", 30)
+        object_goal_angle_tol = self.get_parameter("object_goal_angle_deg").value
         self.object_goal_angle_tol = np.deg2rad(object_goal_angle_tol)
 
         # for timeouts
-        self.timeout_s = rospy.get_param("~timeout_s", 20)
-        self.timeout_dist_m = rospy.get_param("~timeout_dist_m", 0.25)
+        self.declare_parameter("timeout_s", 20)
+        self.declare_parameter("timeout_dist_m", 0.25)
+        self.timeout_s = float(self.get_parameter("timeout_s").value)
+        self.timeout_dist_m = float(self.get_parameter("timeout_dist_m").value)
 
         self.current_goal_id = 0
 
-        self.tf_listener = tf.TransformListener()
+        # TF2 (ROS2) 
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.graph = GraphHandler(graph)
         self.current_nav_status = NAV_STATUS.NONE
 
-        self.pub = rospy.Publisher(pub_topic, MoveBaseActionGoal)
-        self.cancel_goal_pub = rospy.Publisher(cancel_topic, GoalID)
-        self.region_sub = rospy.Service("~region_goal", Task, self.region_goal_cbk)
-        self.object_sub = rospy.Service("~object_goal", Task, self.object_goal_cbk)
-        self.add_node_sub = rospy.Service("~add_node", AddNode, self.add_node_cbk)
-        self.nav_status_sub = rospy.Subscriber(
-            f"/{self.ns}/move_base/status", GoalStatusArray, self.nav_status_cbk
+        # Nav2 Action client (replaces move_base goal/cancel publishers) ----
+        # self.declare_parameter("nav2_action", "navigate_to_pose")  # Nav2 action name
+        action_name = self.get_parameter("nav2_action").value
+        if self.ns and self.ns != "/":
+            # action topic commonly is namespaced like "/<ns>/navigate_to_pose"
+            action_name = f"/{self.ns.strip('/')}/{action_name.strip('/')}"
+        else:
+            action_name = f"/{action_name.strip('/')}"
+
+        self.action_name = action_name
+        self.nav_action_client = ActionClient(self, NavigateToPose, self.action_name)
+        self.current_goal_handle = None
+        self.current_goal_uuid = None
+
+        # They are not used in ROS2 Nav2 action version
+        # self.pub = None
+        # self.cancel_goal_pub = None
+
+        ### Services
+        self.region_sub = self.create_service(Task, "region_goal", self.region_goal_cbk)
+        self.object_sub = self.create_service(Task, "object_goal", self.object_goal_cbk)
+        self.add_node_sub = self.create_service(AddNode, "add_node", self.add_node_cbk)
+        
+        ## Publisher
+        # self.pub = rospy.Publisher(pub_topic, MoveBaseActionGoal)
+        # self.cancel_goal_pub = rospy.Publisher(cancel_topic, GoalID)
+
+        # Subscriber
+        status_topic = f"{self.action_name}/_action/status"
+        self.nav_status_sub = self.create_subscription(
+            GoalStatusArray, status_topic, self.nav_status_cbk, 10
         )
 
-    def add_node_cbk(self, req: AddNodeRequest) -> AddNodeResponse:
+
+    def add_node_cbk(self, req: AddNode.Request) -> AddNode.Response:
         # TODO should this be flipped
         attrs = {"coords": [req.x, req.y], "type": req.type}
         self.graph.update_with_node(node=req.node_id, attrs=attrs, edges=req.neighbors)
-        rospy.logdebug(f"updating graph with coords")
-        return AddNodeResponse(success=True)
+        self.get_logger().debug("updating graph with coords")
+        resp = AddNode.Response()
+        resp.success = True
+        return resp
 
     def nav_status_cbk(self, status: GoalStatusArray) -> None:
         if len(status.status_list):
             self.current_nav_status = NAV_STATUS(status.status_list[0].status)
 
+
     def lookup_robot_pose(self) -> Tuple[Tuple[List[int], List[int]], bool]:
         try:
-            (pos, quat) = self.tf_listener.lookupTransform(
-                self.world_frame, self.robot_frame, rospy.Time(0)
+            # ROS2 TF2 lookup gives TransformStamped
+            t = self.tf_buffer.lookup_transform(
+                self.world_frame,
+                self.robot_frame,
+                rclpy.time.Time()
+            )
+            pos = (t.transform.translation.x, t.transform.translation.y, t.transform.translation.z)
+            quat = (
+                t.transform.rotation.x,
+                t.transform.rotation.y,
+                t.transform.rotation.z,
+                t.transform.rotation.w,
             )
             return (pos, quat), True
-        except (
-            tf.LookupException,
-            tf.ConnectivityException,
-            tf.ExtrapolationException,
-        ):
+        except TransformException:
             return (None, None), False
 
     def get_goal_angle_yaw(
@@ -121,10 +178,8 @@ class GraphNavNode:
     def wait_for_nav_success(self) -> bool:
         # TODO bypass for real experiments
         while False and self.current_nav_status != NAV_STATUS.GOAL_COMPLETE:
-            rospy.loginfo(
-                f"waiting for nav success. status: {self.current_nav_status}"
-            )  # TODO debugging
-            rospy.sleep(5)
+            self.get_logger().info(f"waiting for nav success. status: {self.current_nav_status}")
+            time.sleep(5)
         return True
 
     def _normalized_angle_diff(self, angle_1: float, angle_2: float) -> float:
@@ -137,7 +192,6 @@ class GraphNavNode:
         # nothing to compare
         if len(buffer) == 0:
             return np.inf
-
         return np.linalg.norm(pos - np.array(buffer).reshape(-1, 2), axis=-1).min()
 
     def wait_for_goal_reached(
@@ -154,7 +208,7 @@ class GraphNavNode:
         else:
             stop_condition = lambda pos, yaw: in_lin_tol(pos)
 
-        start_time = rospy.Time.now()
+        start_time = self.get_clock().now()
         history_buffer = []
         pos, _ = self.get_robot_position()
         history_buffer.append(pos)
@@ -182,18 +236,17 @@ class GraphNavNode:
 
             # if robot is moving, reset timer and update history
             if self.get_min_dist_to_buffer(pos, history_buffer) > self.timeout_dist_m:
-                start_time = rospy.Time.now()
+                start_time = self.get_clock().now()
                 history_buffer.append(pos)
 
             # if robot has been stationary for a while, consider goal failed.
-            if (rospy.Time.now() - start_time).to_sec() > self.timeout_s:
-                rospy.loginfo(
-                    f"Goal taking over timeout ({self.timeout_s}). Cancelling"
-                )
+            if (elf.get_clock().now() - start_time).to_sec() > self.timeout_s:
+                self.get_logger().info(f"Goal taking over timeout ({self.timeout_s}). Cancelling")
+
                 self.cancel_goal()
                 return False
 
-            rospy.sleep(0.5)
+            time.sleep(0.5)
 
         # wait for goal to be cancelled
         self.cancel_goal()
@@ -216,7 +269,7 @@ class GraphNavNode:
 
         for segment in segments:
             self.pub_msg(goal_point=segment, orientation_yaw=unit_angle)
-            rospy.sleep(5)  # debounce
+            time.sleep(5)  # debounce
 
             # don't check angle TODO check this
             success = self.wait_for_goal_reached(
@@ -267,16 +320,17 @@ class GraphNavNode:
 
         return True, ""
 
-    def object_goal_cbk(self, goal_task: TaskRequest) -> None:
+    def object_goal_cbk(self, goal_task: Task.Request, resp: Task.Response) -> Task.Response:
         goal_node = goal_task.task
         (obj, obj_attr), (region, region_attr), found = self.graph.lookup_object(
             goal_node
         )
 
         if not found:
-            return TaskResponse(
-                success=False, message=f"Could not find node: {goal_node}"
-            )
+            resp.success = False
+            resp.message = f"Could not find node: {goal_node}"
+            return resp
+
 
         goal_point = np.array(region_attr["coords"])
         goal_angle = self.get_goal_angle_yaw(
@@ -286,7 +340,9 @@ class GraphNavNode:
         # if goal is too far to directly navigate to
         success, msg = self.intermediate_nav(goal_point=goal_point)
         if not success:
-            return TaskResponse(success=success, message=msg)
+            resp.success = success
+            resp.message = msg
+            return resp
 
         self.pub_msg(goal_point=goal_point, orientation_yaw=goal_angle)
         success = self.wait_for_nav_success()
@@ -296,23 +352,26 @@ class GraphNavNode:
             tol=self.goal_reached_lin_tol,
             angle_tol=self.object_goal_angle_tol,
         )
+        resp.success = bool(success)
+        resp.message = "reached goal" if success else "failed"
+        return resp
 
-        return TaskResponse(success=success, message="reached goal")
-
-    def region_goal_cbk(self, goal: TaskRequest) -> None:
+    def region_goal_cbk(self, goal: Task.Request, resp: Task.Response) -> Task.Response:
         goal_node = goal.task
         attr, found = self.graph.lookup_node(goal_node)
 
         if not found:
-            return TaskResponse(
-                success=False, message=f"could not find goal: {goal_node}"
-            )
+            resp.success = False
+            resp.message = f"could not find goal: {goal_node}"
+            return resp
 
         goal_point = np.array(attr["coords"])
 
         success, msg = self.intermediate_nav(goal_point=goal_point)
         if not success:
-            return TaskResponse(success=success, message=msg)
+            resp.success = success
+            resp.message = msg
+            return resp
 
         self.pub_msg(goal_point=goal_point)
         success = self.wait_for_nav_success()
@@ -320,7 +379,10 @@ class GraphNavNode:
             goal_point=goal_point, tol=self.goal_reached_lin_tol
         )
 
-        return TaskResponse(success=success, message="reached goal")
+        resp.success = bool(success)
+        resp.message = "reached goal" if success else "failed"
+        return resp
+
 
     def form_msg(self, goal: np.ndarray, orientation_yaw: float = 0) -> PoseStamped:
         assert goal.ndim == 1
@@ -332,26 +394,27 @@ class GraphNavNode:
         quat = Rotation.from_euler("xyz", (0, 0, orientation_yaw)).as_quat()
 
         header = Header()
-        header.stamp = rospy.Time.now()
+        header.stamp = self.get_clock().now().to_msg()
         header.frame_id = "world"
 
         pose = Pose()
-        pose.orientation.x = quat[0]
-        pose.orientation.y = quat[1]
-        pose.orientation.z = quat[2]
-        pose.orientation.w = quat[3]
+        pose.orientation.x = float(quat[0])
+        pose.orientation.y = float(quat[1])
+        pose.orientation.z = float(quat[2])
+        pose.orientation.w = float(quat[3])
 
-        pose.position.x = goal[0]
-        pose.position.y = goal[1]
-        pose.position.z = goal[2]
+        pose.position.x = float(goal[0])
+        pose.position.y = float(goal[1])
+        pose.position.z = float(goal[2])
 
         msg = PoseStamped(header=header, pose=pose)
 
-        goal_msg = MoveBaseActionGoal()
-        goal_msg.header = msg.header
-        goal_msg.goal_id = GoalID(stamp=msg.header.stamp, id=str(self.current_goal_id))
-        goal_msg.goal.target_pose = msg
-        return goal_msg
+        # goal_msg = MoveBaseActionGoal()
+        # goal_msg.header = msg.header
+        # goal_msg.goal_id = GoalID(stamp=msg.header.stamp, id=str(self.current_goal_id))
+        # goal_msg.goal.target_pose = msg
+        # return goal_msg
+        return msg
 
     def pub_msg(
         self, goal_point: np.ndarray, orientation_yaw: Optional[float] = 0
@@ -359,18 +422,56 @@ class GraphNavNode:
         # self.update_controller()
 
         msg = self.form_msg(goal_point, orientation_yaw=orientation_yaw)
-        self.pub.publish(msg)
+        # self.pub.publish(msg) # not used in ros2
+        # Wait for Nav2 action server
+        if not self.nav_action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error(f"Nav2 action server not available: {self.action_name}")
+            return
+
+        goal = NavigateToPose.Goal()
+        goal.pose = msg
+
+        # Track goal id locally
+        self.current_goal_uuid = uuid.uuid4()
+
+        # Send goal
+        send_future = self.nav_action_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_future)
+
+        goal_handle = send_future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            self.get_logger().error("Goal rejected by Nav2")
+            self.current_goal_handle = None
+            self.current_nav_status = NAV_STATUS.REJECTED
+            return
+
+        self.current_goal_handle = goal_handle
+        self.current_nav_status = NAV_STATUS.GOAL_IN_PROGRESS
 
     def cancel_goal(self) -> None:
         # while self.current_nav_status == NAV_STATUS.GOAL_IN_PROGRESS:
-        for _ in range(5):  # there is a delay in reading status, so use time for now
-            self.cancel_goal_pub.publish(
-                GoalID(stamp=rospy.Time.now(), id=str(self.current_goal_id))
-            )
-            rospy.sleep(0.1)
+        # for _ in range(5):  # there is a delay in reading status, so use time for now
+        #     self.cancel_goal_pub.publish(
+        #         GoalID(stamp=rospy.Time.now(), id=str(self.current_goal_id))
+        #     )
+        #     rospy.sleep(0.1)
+        if self.current_goal_handle is None:
+            return
+
+        cancel_future = self.current_goal_handle.cancel_goal_async()
+        rclpy.spin_until_future_complete(self, cancel_future)
+        self.current_nav_status = NAV_STATUS.GOAL_CANCELED
+        if cancel_future.result() is not None:
+            self.get_logger().info("Cancel request accepted")
+
+
+def main():
+    rclpy.init()
+    nav = GraphNavNode()
+    rclpy.spin(nav)
+    nav.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    rospy.init_node("graph_nav_node")
-    nav = GraphNavNode()
-    rospy.spin()
+    main()

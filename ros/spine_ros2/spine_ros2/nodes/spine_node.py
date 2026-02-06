@@ -6,81 +6,74 @@ from collections import defaultdict
 
 import json
 import numpy as np
-import rospy
+import time
+import rclpy
+from rclpy.node import Node
 from spine.class_llm import ClassLLM
 from spine.spine import SPINE
 from spine.spine_util import UpdatePromptFormer
-from spine.mapping.frontiers import FrontierExtractor, Node
+from spine.mapping.frontiers import FrontierExtractor
+from spine.mapping.frontiers import Node as FrontierNode
 from spine.mapping.graph_sim import GraphSim
 from spine.mapping.graph_util import GraphHandler, to_float_list
 from spine.viz.viz_ros import GraphViz
-from spine_ros.imu_reader import ImuReader
-from spine_ros.srv import (
+# from spine_ros.imu_reader import ImuReader
+from spine_interface_ros2.srv import (
     AddNode,
-    AddNodeRequest,
-    AddNodeResponse,
-    Graph,
-    GraphRequest,
-    GraphResponse,
     Task,
-    TaskRequest,
-    TaskResponse,
+    Query,
+    SetLabels,
+
 )
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid 
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
-from std_srvs.srv import Trigger, TriggerResponse
+from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker
 
-try:
-    from open_vocab_vision_ros.msg import Track
-    from open_vocab_vision_ros.ros_utils import from_track_msg
-    from open_vocab_vision_ros.srv import (
-        Query,
-        QueryRequest,
-        QueryResponse,
-        SetLabels,
-        SetLabelsRequest,
-        SetLabelsResponse,
-    )
-except ImportError:
-    rospy.loginfo(f"open_vocab_vision_ros is not installed. Will not read tracks")
+from spine_interface_ros2.msg import Track
+from spine_ros2.utility.ros_utils import from_track_msg
+
+# except ImportError:
+#     self.get_logger().info(f"open_vocab_vision_ros is not installed. Will not read tracks")
 
 
 def get_add_node_msg(
     node_id: str, x: int, y: int, type: str, neighbors: List[str]
-) -> AddNodeResponse:
-    return AddNodeRequest(
+) -> AddNode.Response:
+    return AddNode.Request(
         node_id=node_id, x=int(x), y=int(y), type=type, neighbors=neighbors
     )
 
 
-class SPINENode:
+class SPINENode(Node):
     DEFAULT_GRAPH = (
         "/home/zac/projects/dcist/catkin_ws/src/llm-planning/data/empty.json"
     )
 
     def __init__(self) -> None:
-        self.ns = rospy.get_param("~ns", default="")
-        graph = rospy.get_param("~init_graph")
-        full_graph = rospy.get_param("~full_graph")
-        self.current_location = rospy.get_param("~init_location", "")
-        self.use_sim_perception = rospy.get_param("~sim_perception", True)
-        self.object_track_topic = rospy.get_param(
-            "~object_tracks", f"{self.ns}/tracker_node/tracks"
-        )
+        super().__init__("spine_node")
+        self.ns = self.declare_parameter("ns", "").value
+        graph = self.declare_parameter("init_graph").value
+        full_graph = self.declare_parameter("full_graph").value
+        self.current_location = self.declare_parameter("init_location", "").value
+        self.use_sim_perception = self.declare_parameter("sim_perception", True).value
+        self.object_track_topic = self.declare_parameter(
+            "object_tracks", f"/{self.ns}/tracks"
+        ).value
 
+        self.get_logger().info(self.object_track_topic)
         # if graph is none, assume we're waiting for a graph
         # TODO tmp logic
         self.waiting_for_graph = full_graph == ""
 
-        self.input_graph_sub = rospy.Subscriber(
-            "/titan/overhead_graph", String, self.input_graph_cbk
+        self.input_graph_sub = self.create_subscription(
+            String, "/titan/overhead_graph",  self.input_graph_cbk, 10
         )
 
         # for applying transforms to graphs from other frames
-        self.imu_reader = ImuReader()
+        # self.imu_reader = ImuReader()
 
         # #
         # internal
@@ -105,32 +98,32 @@ class SPINENode:
         # #
         # for graph navigation
         # #
-        self.navigate_to_region_srv_proxy = rospy.ServiceProxy(
-            f"/{self.ns}/graph_nav_node/region_goal", Task
+        self.navigate_to_region_srv_proxy =self.create_client(Task,
+            f"/{self.ns}/graph_nav_node/region_goal" 
         )
-        self.inspect_object_srv_proxy = rospy.ServiceProxy(
-            f"/{self.ns}/graph_nav_node/object_goal", Task
+        self.inspect_object_srv_proxy =self.create_client(Task,
+            f"/{self.ns}/graph_nav_node/object_goal"
         )
-        self.add_node_srv_proxy = rospy.ServiceProxy(
-            f"/{self.ns}/graph_nav_node/add_node", AddNode
+        self.add_node_srv_proxy =self.create_client(AddNode,
+            f"/{self.ns}/graph_nav_node/add_node"
         )
-        self.task_srv = rospy.Service("~mission", Task, self.task_cbk)
-        self.nav_srv = rospy.Service("~nav_to_region", Task, self.nav_to_region_cbk)
+        self.task_srv = self.create_service(Task, "mission", self.task_cbk)
+        self.nav_srv =self.create_service( Task, "nav_to_region",self.nav_to_region_cbk)
 
-        self.interrupt_srv = rospy.Service("~interrupt", Trigger, self.interrupt_cbk)
+        self.interrupt_srv =self.create_service(Trigger, "interrupt", self.interrupt_cbk)
         self.should_interrupt = False
 
-        self.resume_task_srv = rospy.Service("~resume", Task, self.resume_task_cbk)
+        self.resume_task_srv =self.create_service( Task, "resume",self.resume_task_cbk)
 
         # #
         # for vlm classification
         # #
-        self.scene_description = rospy.get_param("~scene_description", "")
-        self.should_classify_region = rospy.get_param("~should_classify_scene", True)
-        self.classify_scene_srv_proxy = rospy.ServiceProxy(
-            "/vlm_infer/open_classify_scene", Trigger
+        self.scene_description = self.declare_parameter("scene_description", "").value
+        self.should_classify_region = self.declare_parameter("should_classify_scene", True).value
+        self.classify_scene_srv_proxy =self.create_client(Trigger,
+            "/vlm_infer/open_classify_scene"
         )
-        self.query_scene_srv_proxy = rospy.ServiceProxy("/vlm_infer/query_scene", Query)
+        self.query_scene_srv_proxy =self.create_client(Query, "/vlm_infer/query_scene")
 
         # #
         # other members
@@ -144,8 +137,8 @@ class SPINENode:
         self.tracks = {}
         self.added_tracks = set()
         self.updated_tracks = set()
-        self.track_sub = rospy.Subscriber(
-            self.object_track_topic, Track, self.track_cbk
+        self.track_sub = self.create_subscription(
+            Track, self.object_track_topic,  self.track_cbk, 10
         )
         self.track_queue = Queue()
 
@@ -157,12 +150,12 @@ class SPINENode:
         # for frontiers
         # #
 
-        costmap_topic = rospy.get_param(
-            "~costmap_topic", f"/{self.ns}/move_base/local_costmap/costmap"
-        )
-        self.min_new_frontier_dist = rospy.get_param("~min_new_region_dist", 1)
-        costmap_filter_thresh = rospy.get_param("~costmap_filter_thresh", 70)
-        costmap_filter_n_cells = rospy.get_param("~costmap_filter_n_cells", 3)
+        costmap_topic = self.declare_parameter(
+            "costmap_topic", f"/{self.ns}/local_costmap/costmap"
+        ).value
+        self.min_new_frontier_dist = self.declare_parameter("~min_new_region_dist", 1).value
+        costmap_filter_thresh = self.declare_parameter("~costmap_filter_thresh", 70).value
+        costmap_filter_n_cells = self.declare_parameter("~costmap_filter_n_cells", 3).value
 
         self.frontier_extractor = FrontierExtractor(
             init_graph=self.graph,
@@ -171,47 +164,53 @@ class SPINENode:
             costmap_filter_n_cells=costmap_filter_n_cells,
         )
 
-        self.costmap_sub = rospy.Subscriber(
-            costmap_topic, OccupancyGrid, self.costmap_cbk
+        self.costmap_sub = self.create_subscription(
+            OccupancyGrid, costmap_topic,  self.costmap_cbk, 10
         )
-        self.filtered_costmap_pub = rospy.Publisher("~filtered_costmap", OccupancyGrid)
+        self.filtered_costmap_pub = self.create_publisher(OccupancyGrid, "filtered_costmap", 10)
 
         # #
         # for setting labels
         # #
         self.class_llm = ClassLLM()
-        self.use_open_vocab_detection = rospy.get_param(
-            "~use_open_vocab_detection", True
-        )
-        self.space_description = rospy.get_param("~space_description", "")
-        srv_topic = rospy.get_param(
-            "~set_labels_srv", f"/{self.ns}/grounding_dino_ros/set_labels"
-        )
-        self.set_detection_labels_srv = rospy.ServiceProxy(srv_topic, SetLabels)
-        self.task_label_pub = rospy.Publisher("/task_labels", String)
+        self.use_open_vocab_detection = self.declare_parameter(
+            "use_open_vocab_detection", True
+        ).value
+        self.space_description = self.declare_parameter("space_description", "")
+        srv_topic = self.declare_parameter(
+            "set_labels_srv", f"/{self.ns}/grounding_dino_ros/set_labels"
+        ).value
+        self.set_detection_labels_srv = self.create_client(SetLabels,srv_topic)
+        self.task_label_pub = self.create_publisher(String,"/task_labels", 10)
 
         # #
         # for visualization
         # #
-        viz_scale = rospy.get_param("~viz_scale", 0.5)
-        world_frame = rospy.get_param("~world_frame", "map")
+        viz_scale = self.declare_parameter("viz_scale", 0.5).value
+        world_frame = self.declare_parameter("world_frame", "map").value
         self.graph_viz = GraphViz(
             graph=self.graph, scale=viz_scale, target_frame=world_frame
         )
-        self.pub = rospy.Publisher("~graph_viz", Marker, queue_size=100)
+        self.pub = self.create_publisher(Marker, "graph_viz", 100)
 
         # #
         # for graph logging
         # #
-        self.graph_pub = rospy.Publisher("~graph", String, queue_size=10)
+        self.graph_pub = self.create_publisher(String, "graph",  10)
 
         # for timed publishers
         self.pub_freq = 1
-        while not rospy.is_shutdown():
-            self.graph_viz.publish(pub=self.pub)
-            self.graph_pub.publish(String(data=self.graph.to_json_str()))
-            rospy.sleep(self.pub_freq)
+        self.timer = self.create_timer(
+            self.pub_freq,
+            self.publish_graph
+        )
 
+
+    def publish_graph(self):
+        self.graph_viz.publish(pub=self.pub)
+        self.graph_pub.publish(
+            String(data=self.graph.to_json_str())
+        )
     def input_graph_cbk(self, incoming_graph: String) -> None:
         """Receive scene graph from external provider.
 
@@ -229,13 +228,14 @@ class SPINENode:
         -------
         GraphResponse
         """
-        filter_words = ["building", "car"]
+        filter_words = ["building", "car","table","person"]
         # print(f"\ncurrent location: {self.current_location}")
         while not self.imu_reader.is_initialized():
             print(f"gps: {self.imu_reader.gps_initialized}")
             print(f"imu: {self.imu_reader.imu_initialized}")
-            rospy.loginfo(f"waiting for imu orientation initialization")
-            rospy.sleep(1)
+            self.get_logger().info(f"waiting for imu orientation initialization")
+            time.sleep(1)
+
 
         map_origin = np.array([482939.85851084325, 4421267.982947684])
 
@@ -249,18 +249,18 @@ class SPINENode:
         origin = utm_origin - map_origin
         # origin = map_origin - utm_origin
 
-        # rospy.loginfo(f"UGV origin: {utm_origin}")
+        # self.get_logger().info(f"UGV origin: {utm_origin}")
 
         origin = np.array([0, 0])
 
         # if "origin" in data:
         #     graph_origin = to_float_list(data["origin"])
         #     origin = utm_origin - graph_origin
-        #     rospy.loginfo(f"\n\n have origin")
+        #     self.get_logger().info(f"\n\n have origin")
         # else:
         #     origin = np.array([0, 0])
 
-        # rospy.loginfo(f"Using origin: {origin}")
+        # self.get_logger().info(f"Using origin: {origin}")
 
         # filter some classes out
         new_data = {
@@ -444,16 +444,28 @@ class SPINENode:
             yaw=yaw,
         )
 
+        # filtered_costmap_msg = OccupancyGrid()
+        # filtered_costmap_msg.header = costmap_msg.header
+        # filtered_costmap_msg.info = costmap_msg.info
+        # filtered_costmap.map[filtered_costmap.map > 0] = 100
+        # filtered_costmap_msg.data = filtered_costmap.map.reshape(-1)
+        # self.filtered_costmap_pub.publish(filtered_costmap_msg)
+
         filtered_costmap_msg = OccupancyGrid()
         filtered_costmap_msg.header = costmap_msg.header
         filtered_costmap_msg.info = costmap_msg.info
-        filtered_costmap.map[filtered_costmap.map > 0] = 100
-        filtered_costmap_msg.data = filtered_costmap.map.reshape(-1)
+
+        # Make sure values are valid occupancy values
+        m = np.array(filtered_costmap.map, dtype=np.int16)   # or filtered_costmap if it's already an array
+        m[m > 0] = 100                                       # keep unknown (-1) as-is if present
+        m = np.clip(m, -1, 100)                              # safety
+
+        filtered_costmap_msg.data = m.astype(np.int8).flatten().tolist()
         self.filtered_costmap_pub.publish(filtered_costmap_msg)
 
     def add_frontiers_to_graph(
         self, frontiers: np.ndarray, debug: Optional[bool] = False
-    ) -> Tuple[List[Node], bool]:
+    ) -> Tuple[List[FrontierNode], bool]:
         """Compute frontiers and add them to graph.
 
         Parameters
@@ -539,18 +551,22 @@ class SPINENode:
     def track_cbk(self, track_msg: Track) -> None:
         # self.track_queue.put(track_msg)
         # self.clear_track_queue()
+
+        
         parent = self.current_location
 
         track = from_track_msg(track_msg, parent=parent)
+        
 
         if track.idx in self.tracks:
             if not self.tracks[track.idx].is_same(track, pos_tol=1):
                 self.tracks[track.idx] = track
                 self.updated_tracks.add(track.idx)
+                self.get_logger().info("track updated")
         else:
             self.tracks[track.idx] = track
             self.added_tracks.add(track.idx)
-            rospy.loginfo(f"added track: {track}")
+            self.get_logger().info(f"added track: {track}")
 
     # TODO buggy
     def clear_track_queue(self):
@@ -578,16 +594,18 @@ class SPINENode:
             else:
                 self.tracks[track.idx] = track
                 self.added_tracks.add(track.idx)
-                rospy.loginfo(f"added track: {track}")
+                self.get_logger().info(f"added track: {track}")
 
-    def nav_to_region_cbk(self, task: TaskRequest) -> TaskResponse:
+    def nav_to_region_cbk(self, task: Task.Request, resp: Task.Response) -> Task.Response:
         goal = task.task
 
         assert self.graph.contains_node(goal)
 
         success = self.graph_nav_to_region(goal)
+        resp.success = bool(success)
+        resp.message = ""
 
-        return TaskResponse(success=success, msg="")
+        return resp
 
     def graph_nav_to_region(self, goal_region: str) -> bool:
         if self.current_location == goal_region:
@@ -598,7 +616,7 @@ class SPINENode:
         current_iter = 0
         while self.graph.path_exists_from_current_loc(goal_region):
             path = self.graph.get_path(self.current_location, goal_region)
-            rospy.loginfo(f"navigating along path: {path}")
+            self.get_logger().info(f"navigating along path: {path}")
 
             nav_success = True
             for node in path:
@@ -607,7 +625,7 @@ class SPINENode:
                 response = self.navigate_to_region_srv_proxy(node)
                 nav_success = response.success
 
-                rospy.loginfo(f"step {node} in {path} successful: {nav_success}")
+                self.get_logger().info(f"step {node} in {path} successful: {nav_success}")
 
                 if nav_success:
                     self._update_location(node)
@@ -621,7 +639,7 @@ class SPINENode:
 
             # try to return to last known location
             if not nav_success:
-                rospy.loginfo(
+                self.get_logger().info(
                     f"could not traverse path. returning to {self.current_location}"
                 )
                 return_response = self.navigate_to_region_srv_proxy(
@@ -715,7 +733,7 @@ class SPINENode:
         success = self.graph.update_location(new_location)
         return success
 
-    def inspect_object(self, node_name: str, vlm_query: str) -> TaskResponse:
+    def inspect_object(self, node_name: str, vlm_query: str) -> Task.Response:
         nearest_region = self.graph.get_neighbors(node_name)
         assert len(
             nearest_region
@@ -735,7 +753,7 @@ class SPINENode:
         self._update_location(nearest_region)
         response = self.inspect_object_srv_proxy(node_name)
 
-        query = QueryRequest()
+        query = Query.Request()
         query.query = ascii(vlm_query)
 
         answer = self.query_scene_srv_proxy(query)
@@ -766,7 +784,7 @@ class SPINENode:
             Updates formatted in LLM API (if any)
         """
         region_cls = self.classify_scene_srv_proxy()
-        rospy.loginfo(f"scene classified to be {region_cls}")
+        self.get_logger().info(f"scene classified to be {region_cls}")
 
         if region_cls != "unknown":
             self.graph.update_node_description(
@@ -815,7 +833,7 @@ class SPINENode:
         action_updates = []
         for action, arg in plan:
             action_updates.append(f"{action}({arg})")
-            rospy.loginfo(f"executing: {action}({arg})")
+            self.get_logger().info(f"executing: {action}({arg})")
 
             if action == "goto":
                 response = self.graph_nav_to_region(arg)
@@ -913,7 +931,7 @@ class SPINENode:
                     if frontier_dist < closest_frontier_dist:
                         closest_frontier_dist = frontier_dist
                     else:
-                        rospy.loginfo(f"frontiers are getting farther away. breaking")
+                        self.get_logger().info(f"frontiers are getting farther away. breaking")
                         should_extend_map = False
                         should_break = True
 
@@ -929,7 +947,7 @@ class SPINENode:
                     # if frontier is at obstacle or close to target, stop exploration and add
                     # new region to graph
                     if is_at_obstacle:
-                        rospy.loginfo(f"frontier is at obstacle boundary. breaking")
+                        self.get_logger().info(f"frontier is at obstacle boundary. breaking")
                         self.llm_prompt_former.update(
                             freeform_updates=[
                                 f"extend_map could not reach goal location {arg} because it hit an obstacle. However, check new connections to see if the discovered region is connected another region of interest."
@@ -938,10 +956,10 @@ class SPINENode:
                         should_extend_map = False
 
                     elif frontier_dist < self.min_new_frontier_dist:
-                        rospy.loginfo(f"frontier is close to target. breaking")
+                        self.get_logger().info(f"frontier is close to target. breaking")
                         should_extend_map = False
                     else:
-                        rospy.loginfo(f"can explore closes to boundary. continue")
+                        self.get_logger().info(f"can explore closes to boundary. continue")
 
                     # add our new frontier to graph
                     self.add_frontiers_to_graph(frontiers, debug=False)
@@ -959,7 +977,7 @@ class SPINENode:
                         node_type="region",
                     )
 
-                    rospy.loginfo(
+                    self.get_logger().info(
                         f"discovered region: {frontiers[0].id} also connected to: {new_neighbors}"
                     )
 
@@ -1051,7 +1069,7 @@ class SPINENode:
                 should_end = True
                 should_break = True
 
-            rospy.loginfo(f"at end of iteration, should_break: {should_break}")
+            self.get_logger().info(f"at end of iteration, should_break: {should_break}")
             if should_break:
                 break
 
@@ -1089,9 +1107,11 @@ class SPINENode:
             if action_history[-1] in action_history:
                 pass
 
-    def interrupt_cbk(self, trigger: TriggerResponse) -> TriggerResponse:
+    def interrupt_cbk(self, trigger: Trigger.Response) -> Trigger.Response:
         self.should_interrupt = True
-        return TriggerResponse(success=True, message="")
+        trigger.success = True
+        trigger.message = ""
+        return trigger
 
     def set_detection_labels(self, task: str) -> bool:
         # TODO unify language
@@ -1107,7 +1127,7 @@ class SPINENode:
         if not success:
             return False
 
-        rospy.loginfo(f"Class LLM returned: {required_classes}")
+        self.get_logger().info(f"Class LLM returned: {required_classes}")
         classes = required_classes["classes"]
 
         label_str = ",".join(classes)
@@ -1118,9 +1138,9 @@ class SPINENode:
         except:
             return False
 
-    def interrupt_cbk(self, trigger: TriggerResponse) -> TriggerResponse:
-        self.should_interrupt = True
-        return TriggerResponse(success=True, message="")
+    # def interrupt_cbk(self, trigger: TriggerResponse) -> TriggerResponse:
+    #     self.should_interrupt = True
+    #     return TriggerResponse(success=True, message="")
 
     def _realize_planning_iteration(
         self,
@@ -1136,8 +1156,8 @@ class SPINENode:
             f"reasoning: {response['reasoning']}\n"
             f"plan: {response['plan']}"
         )
-        rospy.loginfo(f"\n\nvalidation\n---\n{feedback}\n---")
-        rospy.loginfo(f"\n\nresponse\n---\n{output}\n---")
+        self.get_logger().info(f"\n\nvalidation\n---\n{feedback}\n---")
+        self.get_logger().info(f"\n\nresponse\n---\n{output}\n---")
 
         (
             should_end,
@@ -1165,7 +1185,7 @@ class SPINENode:
         while True:
             response, success, feedback = self.planner.request(llm_prompt)
             if not success:
-                return TaskResponse(success=success, message=str(response))
+                return Task.Response(success=success, message=str(response))
 
             llm_prompt, should_end, output = self._realize_planning_iteration(
                 response=response,
@@ -1177,18 +1197,18 @@ class SPINENode:
             # plan end conditions
             if self.should_interrupt:
                 self.should_interrupt = False
-                rospy.loginfo(f"task interrupted. breaking")
+                self.get_logger().info(f"task interrupted. breaking")
                 break
             if should_end:
-                rospy.loginfo(f"task complete. breaking")
+                self.get_logger().info(f"task complete. breaking")
                 break
             else:
-                rospy.loginfo(f"will iterate with update: {llm_prompt}")
+                self.get_logger().info(f"will iterate with update: {llm_prompt}")
 
-        return TaskResponse(success=True, message=f"{output}")
+        return Task.Response(success=True, message=f"{output}")
 
-    def task_cbk(self, task: TaskRequest) -> TaskResponse:
-        rospy.loginfo(f"{task.task}")
+    def task_cbk(self, task: Task.Request) -> Task.Response:
+        self.get_logger().info(f"{task.task}")
         # TODO best way to do this?
         starting_loc = copy.copy(self.current_location)
 
@@ -1197,8 +1217,9 @@ class SPINENode:
 
         # TODO do we want to reset this?
         while self.waiting_for_graph:
-            rospy.loginfo(f"waiting for incoming graph")
-            rospy.sleep(1)
+            self.get_logger().info(f"waiting for incoming graph")
+            time.sleep(1)
+
 
         if self.use_open_vocab_detection:
             self.set_detection_labels(self.task)
@@ -1214,12 +1235,14 @@ class SPINENode:
 
         return self._realize_plan(llm_prompt=llm_prompt, starting_loc=starting_loc)
 
-    def resume_task_cbk(self, task: TaskRequest) -> TaskResponse:
-        rospy.loginfo(f"Resuming task")
+    def resume_task_cbk(self, task: Task.Request, resp: Task.Response) -> Task.Response:
+        self.get_logger().info(f"Resuming task")
         # query llm with last saved history
         response, success, feedback = self.planner.resume_request()
         if not success:
-            return TaskResponse(success=success, message=str(response))
+            resp.success = success
+            resp.message = str(response)
+            return resp
 
         # form update
         past_actions = []
@@ -1232,7 +1255,9 @@ class SPINENode:
         )
 
         if not success or should_end or self.should_interrupt:
-            return TaskResponse(success=success, message=str(output))
+            resp.success = success
+            resp.message = str(response)
+            return resp
 
         # now continue as usual
         # TODO best way to do this?
@@ -1240,7 +1265,13 @@ class SPINENode:
         return self._realize_plan(llm_prompt=llm_prompt, starting_loc=starting_loc)
 
 
-if __name__ == "__main__":
-    rospy.init_node("spine_node")
+
+def main():
+    rclpy.init()
     planner = SPINENode()
-    rospy.spin()
+    rclpy.spin(planner)
+    planner.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>spine_ros2</name>
+  <version>0.0.1</version>
+  <description>ROS 2 wrapper for KumarRobotics SPINE semantic planner</description>
+
+  <maintainer email="saminmoosavi@yahoo.com">Samin</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>vision_msgs</depend>
+  <depend>spine_interface_ros2</depend>
+
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>yolo_msgs</exec_depend>
+
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
+
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+
