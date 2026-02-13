@@ -49,7 +49,7 @@ def get_add_node_msg(
 
 class SPINENode(Node):
     DEFAULT_GRAPH = (
-        "/home/zac/projects/dcist/catkin_ws/src/llm-planning/data/empty.json"
+        "src/planning_ros_pkgs/SPINE/ros/spine_ros2/data/graph.json"
     )
 
     def __init__(self) -> None:
@@ -90,7 +90,7 @@ class SPINENode(Node):
             self.graph = self.perception.working_graph
         else:
             self.graph = GraphHandler(full_graph, init_node=self.current_location)
-
+        self.get_logger().info(str(self.graph))
         self.planner = SPINE(graph=self.graph)
 
         self.llm_prompt_former = UpdatePromptFormer()
@@ -211,6 +211,7 @@ class SPINENode(Node):
         self.graph_pub.publish(
             String(data=self.graph.to_json_str())
         )
+        
     def input_graph_cbk(self, incoming_graph: String) -> None:
         """Receive scene graph from external provider.
 
@@ -228,7 +229,7 @@ class SPINENode(Node):
         -------
         GraphResponse
         """
-        filter_words = ["building", "car","table","person"]
+        filter_words = ["building"]
         # print(f"\ncurrent location: {self.current_location}")
         while not self.imu_reader.is_initialized():
             print(f"gps: {self.imu_reader.gps_initialized}")
@@ -289,7 +290,7 @@ class SPINENode(Node):
         data = new_data
 
         graph_as_json_str = json.dumps(data)
-
+        self.get_logger().info("graph dumped!")
         # TODO assume incoming graph has node road_1
         custom_data = {
             "regions": [{"name": "road_0", "coords": f"[{origin[0]}, {origin[1]}]"}],
@@ -343,6 +344,8 @@ class SPINENode(Node):
             self.llm_prompt_former.update(
                 freeform_updates=[from_uav_msg],
             )
+            self.get_logger().info("graph existed!")
+
 
         # otherwise, treat incoming graph as regular perception update
         else:
@@ -419,6 +422,8 @@ class SPINENode(Node):
                 )
                 connections = [[node, c] for c in neighbors]
                 self.llm_prompt_former.update(new_connections=connections)
+            self.get_logger().info("graph trated as perception!")
+
 
         self.graph_viz.update_graph(self.graph)
         print(f"\ncurrent loc:{self.current_location}")
@@ -562,11 +567,11 @@ class SPINENode(Node):
             if not self.tracks[track.idx].is_same(track, pos_tol=1):
                 self.tracks[track.idx] = track
                 self.updated_tracks.add(track.idx)
-                self.get_logger().info("track updated")
+                # self.get_logger().info("track updated")
         else:
             self.tracks[track.idx] = track
             self.added_tracks.add(track.idx)
-            self.get_logger().info(f"added track: {track}")
+            # self.get_logger().info(f"added track: {track}")
 
     # TODO buggy
     def clear_track_queue(self):
@@ -622,7 +627,7 @@ class SPINENode(Node):
             for node in path:
                 if self.current_location == node:
                     continue
-                response = self.navigate_to_region_srv_proxy(node)
+                response = self.navigate_to_region_srv_proxy.call_async(str(node)) #### Service what type it 
                 nav_success = response.success
 
                 self.get_logger().info(f"step {node} in {path} successful: {nav_success}")
@@ -676,7 +681,8 @@ class SPINENode(Node):
         return nav_success
 
     def parse_track_updates(self) -> List[str]:
-        """Construct new object message in the planning API.
+        """ This is adding the graph
+        Construct new object message in the planning API. 
         Objects are newly received tracks.
 
         Also update graph.
@@ -1184,6 +1190,7 @@ class SPINENode(Node):
         past_actions = []
         while True:
             response, success, feedback = self.planner.request(llm_prompt)
+            self.get_logger().info(str(response))
             if not success:
                 return Task.Response(success=success, message=str(response))
 
@@ -1207,7 +1214,7 @@ class SPINENode(Node):
 
         return Task.Response(success=True, message=f"{output}")
 
-    def task_cbk(self, task: Task.Request) -> Task.Response:
+    def task_cbk(self, task: Task.Request, resp: Task.Response) -> Task.Response:
         self.get_logger().info(f"{task.task}")
         # TODO best way to do this?
         starting_loc = copy.copy(self.current_location)

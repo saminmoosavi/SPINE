@@ -13,6 +13,8 @@ def generate_launch_description():
     # --------------------
     # Launch arguments
     # --------------------
+    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
+
     ns = LaunchConfiguration("ns")
 
     graph = LaunchConfiguration("graph")
@@ -65,9 +67,9 @@ def generate_launch_description():
             ]),
         ),
 
-        DeclareLaunchArgument("init_location", default_value="region_1"),
+        DeclareLaunchArgument("init_location", default_value="R1"),
 
-        DeclareLaunchArgument("robot_frame", default_value="body"),
+        DeclareLaunchArgument("robot_frame", default_value="base_link"),
         DeclareLaunchArgument("world_frame", default_value="map"),
 
         DeclareLaunchArgument("use_sim_perception", default_value="false"),
@@ -93,7 +95,7 @@ def generate_launch_description():
     # garph_service.py
     # ---------------------
 
-    graph_service_node = Node(
+    graph_service = Node(
         package='spine_ros2',
         executable='graph_service',
         name='graph_service',
@@ -122,6 +124,10 @@ def generate_launch_description():
                 "goal_reached_lin_tol": goal_reached_lin_tol,
                 "timeout_s": goal_timeout,
             }
+        ],
+        remappings=[
+            ('/tf', 'tf'), # Remap global /tf to relative tf (becomes /my_namespace/tf)
+            ('/tf_static', 'tf_static'), # Remap global /tf_static to relative tf_static
         ],
     )
 
@@ -159,7 +165,7 @@ def generate_launch_description():
     group = GroupAction(
         [
             PushRosNamespace(ns),
-            graph_service_node,
+            graph_service,
             spine_node,
             graph_nav_node,
             

@@ -44,12 +44,12 @@ class SPINE:
 
         now = datetime.now()
 
-        # dt_string = now.strftime("%d_%m_%Y_%H_%M_%S")
+        dt_string = now.strftime("%d_%m_%Y_%H_%M_%S")
         self.logger = get_logger(
             name="LLMPlanner",
             level=logging.INFO,
-            stdout=False,
-            # fpath=f"llm_logs_{dt_string}.txt",
+            stdout=True,
+            fpath=f"llm_logs_{dt_string}.txt",
         )
         self.logger.disabled = True
 
@@ -205,6 +205,7 @@ class SPINE:
                 self.logger.info(
                     f"couldn't find node {first_arg} in graph: {self.graph.graph.nodes}"
                 )
+
                 feedback = (
                     f"Feedback: scene does not contain {first_arg}. "
                     f"All plans must reference nodes in the current scene. "
@@ -346,6 +347,7 @@ class SPINE:
 
     def request(self, request: str) -> Tuple[Dict[str, Any], bool, List[str]]:
         self.logger.info(f"Got Request: {request}")
+        print(f"Got Request: {request}")
 
         # on first request
         # TODO assumes first request is instruction. should update

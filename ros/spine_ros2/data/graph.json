@@ -18,7 +18,7 @@
 
   "regions": [
     { "name": "R1",  "coords": [0.15, 0.25] },
-    { "name": "R2",  "coords": [0.20, 0.40] },
+    { "name": "R2",  "coords": [10.0, 12.0] },
     { "name": "R3",  "coords": [0.25, 0.55] },
     { "name": "R4",  "coords": [0.35, 0.70] },
     { "name": "R5",  "coords": [0.50, 0.70] },

@@ -1,17 +1,17 @@
 #!/usr/bin/env python
 import enum
 from typing import List, Optional, Tuple, Union
-
+import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
-
+import uuid
 import tf2_ros
 from tf2_ros import TransformException
 
 from action_msgs.msg import GoalStatusArray  # ROS2 action status array
-from nav2_msgs.action import NavigateToPose  # ROS2 Nav2 action
+from nav2_msgs.action import NavigateToPose  # ROS2 Nav2 actions
 from std_msgs.msg import Header
 from scipy.spatial.transform import Rotation
 
@@ -45,8 +45,7 @@ class GraphNavNode(Node):
     ZERO_VEC_2D = np.zeros(
         2,
     )
-    DEFAULT_GRAPH = "/home/zac/projects/dcist/catkin_ws/src/llm-planning/data/flooded_grounds_coords.json"
-
+    DEFAULT_GRAPH = "src/planning_ros_pkgs/SPINE/ros/spine_ros2/data/graph.json"
     def __init__(self) -> None:
         super().__init__("graph_nav_node")
 
@@ -90,7 +89,7 @@ class GraphNavNode(Node):
         # TF2 (ROS2) 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
+        ## This is listening to /tf but we are publishing to /a200_0000/tf
         self.graph = GraphHandler(graph)
         self.current_nav_status = NAV_STATUS.NONE
 
@@ -144,6 +143,7 @@ class GraphNavNode(Node):
 
     def lookup_robot_pose(self) -> Tuple[Tuple[List[int], List[int]], bool]:
         try:
+            self.get_logger().info(("{}, {}").format(self.world_frame, self.robot_frame))
             # ROS2 TF2 lookup gives TransformStamped
             t = self.tf_buffer.lookup_transform(
                 self.world_frame,
@@ -240,7 +240,7 @@ class GraphNavNode(Node):
                 history_buffer.append(pos)
 
             # if robot has been stationary for a while, consider goal failed.
-            if (elf.get_clock().now() - start_time).to_sec() > self.timeout_s:
+            if (self.get_clock().now() - start_time).to_sec() > self.timeout_s:
                 self.get_logger().info(f"Goal taking over timeout ({self.timeout_s}). Cancelling")
 
                 self.cancel_goal()
@@ -261,7 +261,7 @@ class GraphNavNode(Node):
         unit_vec = diff / dist
         unit_angle = self.get_goal_angle_yaw(goal_point=unit_vec)
 
-        n_segments = int(dist // self.max_goal_dist_m)
+        n_segments = int(dist // self.max_goal_dist_m) 
         segments = [
             robot_position + unit_vec * self.max_goal_dist_m * (i + 1)
             for i in range(n_segments)
@@ -338,11 +338,11 @@ class GraphNavNode(Node):
         )
 
         # if goal is too far to directly navigate to
-        success, msg = self.intermediate_nav(goal_point=goal_point)
-        if not success:
-            resp.success = success
-            resp.message = msg
-            return resp
+        # success, msg = self.intermediate_nav(goal_point=goal_point)
+        # if not success:
+        #     resp.success = success
+        #     resp.message = msg
+        #     return resp
 
         self.pub_msg(goal_point=goal_point, orientation_yaw=goal_angle)
         success = self.wait_for_nav_success()
