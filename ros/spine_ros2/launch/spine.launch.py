@@ -92,6 +92,24 @@ def generate_launch_description():
     ]
     
     # --------------------
+    # tracker_with_yolo.py
+    # ---------------------
+
+    tracker_with_yolo = Node(
+        package='spine_ros2',
+        executable='tracker_with_yolo',
+        name='tracker_with_yolo',
+        output='screen',
+        parameters=[{
+            'ns': ns,
+        }],
+        remappings=[
+            ('/tf', 'tf'), # Remap global /tf to relative tf (becomes /my_namespace/tf)
+            ('/tf_static', 'tf_static'), # Remap global /tf_static to relative tf_static
+        ],
+    )
+
+    # --------------------
     # garph_service.py
     # ---------------------
 
@@ -165,6 +183,7 @@ def generate_launch_description():
     group = GroupAction(
         [
             PushRosNamespace(ns),
+            tracker_with_yolo,
             graph_service,
             spine_node,
             graph_nav_node,

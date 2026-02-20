@@ -1,10 +1,10 @@
 {
   "objects": [
     { "name": "O1",  "coords": [0.10, 0.10] },
-    { "name": "O2",  "coords": [0.10, 0.30] },
-    { "name": "O3",  "coords": [0.18, 0.48] },
-    { "name": "O4",  "coords": [0.28, 0.70] },
-    { "name": "O5",  "coords": [0.50, 0.80] },
+    { "name": "O2",  "coords": [5.10, 5.30] },
+    { "name": "O3",  "coords": [10.18, 10.48] },
+    { "name": "O4",  "coords": [13.28, 13.70] },
+    { "name": "O5",  "coords": [20.50, 20.80] },
     { "name": "O6",  "coords": [0.80, 0.75] },
     { "name": "O7",  "coords": [0.90, 0.50] },
     { "name": "O8",  "coords": [0.80, 0.20] },
@@ -18,16 +18,16 @@
 
   "regions": [
     { "name": "R1",  "coords": [0.15, 0.25] },
-    { "name": "R2",  "coords": [10.0, 12.0] },
-    { "name": "R3",  "coords": [0.25, 0.55] },
-    { "name": "R4",  "coords": [0.35, 0.70] },
-    { "name": "R5",  "coords": [0.50, 0.70] },
-    { "name": "R6",  "coords": [0.50, 0.50] },
-    { "name": "R7",  "coords": [0.65, 0.35] },
-    { "name": "R8",  "coords": [0.60, 0.15] },
-    { "name": "R9",  "coords": [0.35, 0.35] },
-    { "name": "R10", "coords": [0.80, 0.40] },
-    { "name": "R11", "coords": [0.75, 0.65] }
+    { "name": "R2",  "coords": [5.0, 5.0] },
+    { "name": "R3",  "coords": [10.25, 10.55] },
+    { "name": "R4",  "coords": [13.35, 13.70] },
+    { "name": "R5",  "coords": [-13.28, -13.70] },
+    { "name": "R6",  "coords": [-10.25, -10.55] },
+    { "name": "R7",  "coords": [-5.0, -5.0] },
+    { "name": "R8",  "coords": [35.60, 35.15] },
+    { "name": "R9",  "coords": [40.35, 40.35] },
+    { "name": "R10", "coords": [45.80, 45.40] },
+    { "name": "R11", "coords": [50.75, 50.65] }
   ],
 
   "object_connections": [

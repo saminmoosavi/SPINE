@@ -10,7 +10,7 @@ import uuid
 import tf2_ros
 from tf2_ros import TransformException
 
-from action_msgs.msg import GoalStatusArray  # ROS2 action status array
+from action_msgs.msg import GoalStatusArray, GoalStatus  # ROS2 action status array
 from nav2_msgs.action import NavigateToPose  # ROS2 Nav2 actions
 from std_msgs.msg import Header
 from scipy.spatial.transform import Rotation
@@ -29,17 +29,24 @@ def unit_vector(vector):
 
 
 class NAV_STATUS(enum.Enum):
-    NONE = 0
-    GOAL_IN_PROGRESS = 1
-    GOAL_CANCELED = 2
-    GOAL_COMPLETE = 3
-    FAILED_TO_FIND_PLAN = 4
-    REJECTED = 5
-    PREMPTING = 6
-    RECALLING = 7
-    RECALLED = 8
-    LOST = 9
+    # NONE = 0
+    # GOAL_IN_PROGRESS = 1
+    # GOAL_CANCELED = 2
+    # GOAL_COMPLETE = 3
+    # FAILED_TO_FIND_PLAN = 4
+    # REJECTED = 5
+    # PREMPTING = 6
+    # RECALLING = 7
+    # RECALLED = 8
+    # LOST = 9
 
+    STATUS_UNKNOWN=0
+    STATUS_ACCEPTED=1
+    STATUS_EXECUTING=2
+    STATUS_CANCELING=3
+    STATUS_SUCCEEDED=4
+    STATUS_CANCELED=5
+    STATUS_ABORTED=6
 
 class GraphNavNode(Node):
     ZERO_VEC_2D = np.zeros(
@@ -91,7 +98,7 @@ class GraphNavNode(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         ## This is listening to /tf but we are publishing to /a200_0000/tf
         self.graph = GraphHandler(graph)
-        self.current_nav_status = NAV_STATUS.NONE
+        # self.current_nav_status = NAV_STATUS.NONE
 
         # Nav2 Action client (replaces move_base goal/cancel publishers) ----
         # self.declare_parameter("nav2_action", "navigate_to_pose")  # Nav2 action name
@@ -177,7 +184,7 @@ class GraphNavNode(Node):
 
     def wait_for_nav_success(self) -> bool:
         # TODO bypass for real experiments
-        while False and self.current_nav_status != NAV_STATUS.GOAL_COMPLETE:
+        while False and self.current_nav_status != NAV_STATUS.STATUS_SUCCEEDED:
             self.get_logger().info(f"waiting for nav success. status: {self.current_nav_status}")
             time.sleep(5)
         return True
@@ -228,8 +235,8 @@ class GraphNavNode(Node):
 
             # break if can't reach goal
             if (
-                self.current_nav_status == NAV_STATUS.FAILED_TO_FIND_PLAN
-                or self.current_nav_status == NAV_STATUS.REJECTED
+                self.current_nav_status == NAV_STATUS.STATUS_ABORTED
+                or self.current_nav_status == NAV_STATUS.    STATUS_UNKNOWN
             ):
                 self.cancel_goal()
                 return False
@@ -442,14 +449,14 @@ class GraphNavNode(Node):
         if goal_handle is None or not goal_handle.accepted:
             self.get_logger().error("Goal rejected by Nav2")
             self.current_goal_handle = None
-            self.current_nav_status = NAV_STATUS.REJECTED
+            self.current_nav_status = NAV_STATUS.    STATUS_UNKNOWN
             return
 
         self.current_goal_handle = goal_handle
-        self.current_nav_status = NAV_STATUS.GOAL_IN_PROGRESS
+        self.current_nav_status = NAV_STATUS.STATUS_EXECUTING
 
     def cancel_goal(self) -> None:
-        # while self.current_nav_status == NAV_STATUS.GOAL_IN_PROGRESS:
+        # while self.current_nav_status == NAV_STATUS.STATUS_EXECUTING:
         # for _ in range(5):  # there is a delay in reading status, so use time for now
         #     self.cancel_goal_pub.publish(
         #         GoalID(stamp=rospy.Time.now(), id=str(self.current_goal_id))
@@ -460,7 +467,7 @@ class GraphNavNode(Node):
 
         cancel_future = self.current_goal_handle.cancel_goal_async()
         rclpy.spin_until_future_complete(self, cancel_future)
-        self.current_nav_status = NAV_STATUS.GOAL_CANCELED
+        self.current_nav_status = NAV_STATUS.STATUS_CANCELED
         if cancel_future.result() is not None:
             self.get_logger().info("Cancel request accepted")
 

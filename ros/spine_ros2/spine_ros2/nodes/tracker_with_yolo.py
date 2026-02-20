@@ -383,7 +383,7 @@ class YoloTrackingPointCloudToTrack(Node):
             out.class_id = int(class_id)
             out.label = str(label)
             out.pose = self._make_pose_with_cov(*xyz_out)
-            self.get_logger().info("HII")
+            # self.get_logger().info("HII")
             self._pub.publish(out)
 
 
