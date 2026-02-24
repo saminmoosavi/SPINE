@@ -48,6 +48,7 @@ def generate_launch_description():
     # Declare arguments
     # --------------------
     declare_args = [
+        DeclareLaunchArgument('use_sim_time', default_value='true'),
 
         DeclareLaunchArgument("ns", default_value="ns"),
         DeclareLaunchArgument(
@@ -69,7 +70,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument("init_location", default_value="R1"),
 
-        DeclareLaunchArgument("robot_frame", default_value="base_link"),
+        DeclareLaunchArgument("robot_frame", default_value="odom"),
         DeclareLaunchArgument("world_frame", default_value="map"),
 
         DeclareLaunchArgument("use_sim_perception", default_value="false"),
@@ -102,6 +103,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'ns': ns,
+            'use_sim_time': use_sim_time,
         }],
         remappings=[
             ('/tf', 'tf'), # Remap global /tf to relative tf (becomes /my_namespace/tf)
@@ -120,6 +122,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'ns': ns,
+            'use_sim_time': use_sim_time,
         }],
     )
 
@@ -141,6 +144,7 @@ def generate_launch_description():
                 "max_goal_dist_m": max_goal_dist_m,
                 "goal_reached_lin_tol": goal_reached_lin_tol,
                 "timeout_s": goal_timeout,
+                'use_sim_time': use_sim_time,
             }
         ],
         remappings=[
@@ -173,6 +177,7 @@ def generate_launch_description():
                 "set_labels_srv": label_srv,
                 "use_open_vocab_detection": use_open_vocab_detection,
                 "scene_description": scene_description,
+                'use_sim_time': use_sim_time,
             }
         ],
     )

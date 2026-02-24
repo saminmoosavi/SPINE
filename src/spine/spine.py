@@ -49,7 +49,7 @@ class SPINE:
             name="LLMPlanner",
             level=logging.INFO,
             stdout=True,
-            fpath=f"llm_logs_{dt_string}.txt",
+            # fpath=f"llm_logs_{dt_string}.txt",
         )
         self.logger.disabled = True
 
