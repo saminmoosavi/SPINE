@@ -18,9 +18,9 @@
 
   "regions": [
     { "name": "R1",  "coords": [0.15, 0.25] },
-    { "name": "R2",  "coords": [5.0, 5.0] },
-    { "name": "R3",  "coords": [10.25, 10.55] },
-    { "name": "R4",  "coords": [13.35, 13.70] },
+    { "name": "R2",  "coords": [0.15, 2.0] },
+    { "name": "R3",  "coords": [5.0, 2.0] },
+    { "name": "R4",  "coords": [5.0, 5.0] },
     { "name": "R5",  "coords": [-13.28, -13.70] },
     { "name": "R6",  "coords": [-10.25, -10.55] },
     { "name": "R7",  "coords": [-5.0, -5.0] },
@@ -49,7 +49,6 @@
   "region_connections": [
     ["R1", "R2"],
     ["R2", "R3"],
-    ["R3", "R4"],
     ["R4", "R5"],
     ["R5", "R6"],
     ["R6", "R7"],
@@ -60,5 +59,5 @@
     ["R5", "R11"]
   ],
 
-  "robot_location": "R9"
+  "robot_location": "R1"
 }

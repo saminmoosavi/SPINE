@@ -34,6 +34,8 @@ class FrontierExtractor:
 
         # create sample grid
         self.costmap_resolution = 0.2
+        self.costmap_resolution = 0.5
+      
         self.default_costmap_shape = (10, 10)
         self.costmap_step_size = self.default_costmap_shape[0] * 0.2 / 4
         self.sample_grid = self.create_sampling_grid(
@@ -163,10 +165,12 @@ class FrontierExtractor:
             pt = ((rot.T @ (pt - pos)[..., np.newaxis])[..., 0] / resolution).astype(
                 np.int32
             )
+        print(f" world to costmap {pt.squeeze()[::-1]}")
         return pt.squeeze()[::-1]  # flip (x,y) to put in image coords for costmap
 
     def is_pt_in_costmap(self, pt: np.ndarray, costmap_info: CostMapWithInfo) -> bool:
         """Does the point lie in the costmap?
+
 
         Parameters
         ----------
@@ -241,6 +245,9 @@ class FrontierExtractor:
             return False
 
         self.logger.debug(
+            f"\tpt: {pt_in_costmap}, value: {~costmap_info.map[pt_in_costmap[0], pt_in_costmap[1]].astype(bool)}"
+        )
+        print(
             f"\tpt: {pt_in_costmap}, value: {~costmap_info.map[pt_in_costmap[0], pt_in_costmap[1]].astype(bool)}"
         )
 
@@ -354,6 +361,7 @@ class FrontierExtractor:
         - closest fit frontier
         - is at obstacle boundary
         """
+        print("We are here!")
         current_loc = self.region_node_locs[
             np.where(current_location == self.region_nodes)
         ]
@@ -363,7 +371,7 @@ class FrontierExtractor:
         n_samples = (np.linalg.norm(pointing_vector) / self.costmap_resolution).astype(
             np.int32
         )
-
+        
         scale_factor = 1
         success = False
         best_fit_point = None
@@ -371,43 +379,52 @@ class FrontierExtractor:
 
         # line search for farthest free point
         for scale_factor in range(1, n_samples):
+            print(f"in scale factor {n_samples}")
+
             exploration_target = (
                 pointing_vector * (scale_factor / n_samples) + current_loc
             )
             current_scale = np.linalg.norm(exploration_target - current_loc)
-
+            ## Check the occupnacy map
             # assume robot is at (0, 0), perform line search for farthest free point
-            if not self.pt_is_free(exploration_target, self.filtered_costmap_with_info):
-                # once we hit a non-free point, line search terminates
-                self.logger.debug(f"\tchecking point: {exploration_target} occuplied")
+            # if not self.pt_is_free(exploration_target, self.filtered_costmap_with_info):
+            #     # once we hit a non-free point, line search terminates
+            #     self.logger.debug(f"\tchecking point: {exploration_target} occuplied")
+            #     print(f"\tchecking point: {exploration_target} occuplied")
+            #     # if the point is in the costmap, we stopped b/c an obstacle
+            #     at_obstacle = self.pt_in_costmap(
+            #         exploration_target, self.filtered_costmap_with_info
+            #     )
 
-                # if the point is in the costmap, we stopped b/c an obstacle
-                at_obstacle = self.pt_in_costmap(
-                    exploration_target, self.filtered_costmap_with_info
-                )
+            #     break
+            # # we've hit desired magnitude
+            # elif current_scale > desired_scale:
+            #     break
 
-                break
-            # we've hit desired magnitude
-            elif current_scale > desired_scale:
-                break
-
-            # don't consider point if it is too close to existing region
-            elif (
-                self.get_dist_from_regions(exploration_target)
-                < self.min_new_frontier_thresh
-            ):
-                self.logger.debug(
-                    f"proposed frontier {exploration_target} too close to existing region"
-                )
-                continue
+            # # don't consider point if it is too close to existing region
+            # elif (
+            #     self.get_dist_from_regions(exploration_target)
+            #     < self.min_new_frontier_thresh
+            # ):
+            #     self.logger.debug(
+            #         f"proposed frontier {exploration_target} too close to existing region"
+            #     )
+            #     print(f"proposed frontier {exploration_target} too close to existing region")
+            #     continue
             # if point is passes distance and obstacle checks, consider it
-            else:
-                best_fit_point = exploration_target
-                success = True
+            # else:
+            #     best_fit_point = exploration_target
+            #     success = True
+            
+            #### Do not check the occupancy and set the occupancy to unoccupied
+            best_fit_point = exploration_target
+            success = True
 
             self.logger.debug(f"\tchecking point: {exploration_target} free")
+            print(f"\tchecking point: {exploration_target} free")
 
         if scale_factor <= 1:  # this means no points were free
+            print(" no points were free")
             return (
                 False,
                 best_fit_point,

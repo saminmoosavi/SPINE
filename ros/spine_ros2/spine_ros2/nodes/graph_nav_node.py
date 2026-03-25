@@ -8,9 +8,12 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.time import Time
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 import uuid
 import tf2_ros
 from tf2_ros import TransformException
+import threading
 
 from action_msgs.msg import GoalStatusArray, GoalStatus  # ROS2 action status array
 from nav2_msgs.action import NavigateToPose  # ROS2 Nav2 actions
@@ -97,8 +100,10 @@ class GraphNavNode(Node):
 
         # TF2 (ROS2) 
         self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self,spin_thread=True)
+        # self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self,spin_thread=True)
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        self.cb_group = ReentrantCallbackGroup()
 
         ## This is listening to /tf but we are publishing to /a200_0000/tf
         self.graph = GraphHandler(graph)
@@ -114,7 +119,7 @@ class GraphNavNode(Node):
             action_name = f"/{action_name.strip('/')}"
 
         self.action_name = action_name
-        self.nav_action_client = ActionClient(self, NavigateToPose, self.action_name)
+        self.nav_action_client = ActionClient(self, NavigateToPose, self.action_name,callback_group=self.cb_group)
         self.current_goal_handle = None
         self.current_goal_uuid = None
 
@@ -122,10 +127,14 @@ class GraphNavNode(Node):
         # self.pub = None
         # self.cancel_goal_pub = None
 
+        region_goal = f"/{self.ns}/region_goal"
+        object_goal = f"/{self.ns}/object_goal"
+        add_node = f"/{self.ns}/add_node"
+        
         ### Services
-        self.region_sub = self.create_service(Task, "region_goal", self.region_goal_cbk)
-        self.object_sub = self.create_service(Task, "object_goal", self.object_goal_cbk)
-        self.add_node_sub = self.create_service(AddNode, "add_node", self.add_node_cbk)
+        self.region_sub = self.create_service(Task, region_goal, self.region_goal_cbk, callback_group=self.cb_group)
+        self.object_sub = self.create_service(Task, object_goal, self.object_goal_cbk, callback_group=self.cb_group)
+        self.add_node_sub = self.create_service(AddNode, add_node, self.add_node_cbk, callback_group=self.cb_group)
         
         ## Publisher
         # self.pub = rospy.Publisher(pub_topic, MoveBaseActionGoal)
@@ -133,12 +142,14 @@ class GraphNavNode(Node):
 
         # Subscriber
         status_topic = f"{self.action_name}/_action/status"
+        # self.get_logger().info(f" status callback is {status_topic}")
+
         self.nav_status_sub = self.create_subscription(
-            GoalStatusArray, status_topic, self.nav_status_cbk, 10
+            GoalStatusArray, status_topic, self.nav_status_cbk, 10, callback_group=self.cb_group
         )
 
 
-    def add_node_cbk(self, req: AddNode.Request) -> AddNode.Response:
+    def add_node_cbk(self, req: AddNode.Request, resp: AddNode.Response) -> AddNode.Response:
         # TODO should this be flipped
         attrs = {"coords": [req.x, req.y], "type": req.type}
         self.graph.update_with_node(node=req.node_id, attrs=attrs, edges=req.neighbors)
@@ -148,10 +159,10 @@ class GraphNavNode(Node):
         return resp
 
     def nav_status_cbk(self, status: GoalStatusArray) -> None:
-        self.get_logger().info(str(status))
+        # self.get_logger().info(f"HI {str(status.status_list[-1].status)}")
         if len(status.status_list):
-            self.current_nav_status = NAV_STATUS(status.status_list[0].status)
-            self.get_logger().info(str(self.current_nav_status))
+            self.current_nav_status = NAV_STATUS(status.status_list[-1].status)
+            self.get_logger().info(f" Inside nav_status_cbk the nav status result is {str(self.current_nav_status)}")
 
 
     def lookup_robot_pose(self) -> Tuple[Tuple[List[int], List[int]], bool]:
@@ -164,7 +175,7 @@ class GraphNavNode(Node):
                 self.get_logger().warn(f"TF not available yet: {self.world_frame} -> {self.robot_frame}")
                 return (None, None), False
 
-            self.get_logger().info(("{}, {}").format(self.world_frame, self.robot_frame))
+            # self.get_logger().info(("{}, {}").format(self.world_frame, self.robot_frame))
             # ROS2 TF2 lookup gives TransformStamped
             t = self.tf_buffer.lookup_transform(
                 self.world_frame,
@@ -289,7 +300,9 @@ class GraphNavNode(Node):
                 history_buffer.append(pos)
 
             # if robot has been stationary for a while, consider goal failed.
-            if (self.get_clock().now() - start_time).to_sec() > self.timeout_s:
+
+            elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
+            if elapsed > self.timeout_s:
                 self.get_logger().info(f"Goal taking over timeout ({self.timeout_s}). Cancelling")
 
                 self.cancel_goal()
@@ -421,22 +434,22 @@ class GraphNavNode(Node):
 
         goal_point = np.array(attr["coords"])
 
-        success, msg = self.intermediate_nav(goal_point=goal_point)
-        if not success:
-            self.logger().info("not success after intermediate_nav")
-            resp.success = success
-            resp.message = msg
-            return resp
+        # success, msg = self.intermediate_nav(goal_point=goal_point)
+        # if not success:
+        #     self.logger().info("not success after intermediate_nav")
+        #     resp.success = success
+        #     resp.message = msg
+        #     return resp
       
-        self.pub_msg(goal_point=goal_point)
-        success = self.wait_for_nav_success()
-        success = self.wait_for_goal_reached(
-            goal_point=goal_point, tol=self.goal_reached_lin_tol
-        )
-
-        resp.success = bool(success)
+        success = self.pub_msg(goal_point=goal_point)
+        # success = self.wait_for_nav_success()
+        # success = self.wait_for_goal_reached(
+        #     goal_point=goal_point, tol=self.goal_reached_lin_tol
+        # )
+        
+        resp.success = success
         resp.message = "reached goal" if success else "failed"
-        self.get_logger().info("at the end of region_goal_cbk {}".format(success))
+        self.get_logger().info("At the end of region_goal_cbk {}".format(success))
         return resp
 
 
@@ -452,7 +465,7 @@ class GraphNavNode(Node):
         header = Header()
         header.stamp = self.get_clock().now().to_msg()
         header.frame_id = self.world_frame
-        self.get_logger().info(self.world_frame)
+        # self.get_logger().info(self.world_frame)
         pose = Pose()
         pose.orientation.x = float(quat[0])
         pose.orientation.y = float(quat[1])
@@ -470,49 +483,118 @@ class GraphNavNode(Node):
         # goal_msg.goal_id = GoalID(stamp=msg.header.stamp, id=str(self.current_goal_id))
         # goal_msg.goal.target_pose = msg
         # return goal_msg
-        self.get_logger().info("form_msg")
+        # self.get_logger().info("form_msg")
         # self.get_logger().info(pose.position.x)
         return msg
 
-    def pub_msg(
-        self, goal_point: np.ndarray, orientation_yaw: Optional[float] = 0
-    ) -> None:
-        # self.update_controller()
-        # self.get_logger().info("pub_msg")
-        # self.get_logger().info(goal_point)
 
+
+    def pub_msg(self, goal_point, orientation_yaw=0.0) -> bool:
         msg = self.form_msg(goal_point, orientation_yaw=orientation_yaw)
 
-        # self.pub.publish(msg) # not used in ros2
-        # Wait for Nav2 action server
         if not self.nav_action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(f"Nav2 action server not available: {self.action_name}")
-            return
+            return False
 
         goal = NavigateToPose.Goal()
         goal.pose = msg
-        self.get_logger().info("in pub_msg")
-        self.get_logger().info("The gaol is {}".format(goal.pose))
-        # Track goal id locally
-        self.current_goal_uuid = uuid.uuid4()
+        self.get_logger().info(f"The goal is {goal.pose}")
 
-        # Send goal
+        done_event = threading.Event()
+        nav_result = {"success": False}
+
+        def on_result(result_future):
+            try:
+                result_wrap = result_future.result()
+                status = result_wrap.status
+                self.get_logger().info(f"Nav result status={status}, result={result_wrap.result}")
+                nav_result["success"] = (status == GoalStatus.STATUS_SUCCEEDED)
+            except Exception as e:
+                self.get_logger().error(f"Failed getting nav result: {e}")
+                nav_result["success"] = False
+            finally:
+                done_event.set()
+
+        def on_goal_response(send_future):
+            try:
+                goal_handle = send_future.result()
+                if goal_handle is None or not goal_handle.accepted:
+                    self.get_logger().warn("Goal rejected")
+                    nav_result["success"] = False
+                    done_event.set()
+                    return
+
+                self.get_logger().info("Goal accepted")
+                result_future = goal_handle.get_result_async()
+                result_future.add_done_callback(on_result)
+
+            except Exception as e:
+                self.get_logger().error(f"Goal response failed: {e}")
+                nav_result["success"] = False
+                done_event.set()
+
         send_future = self.nav_action_client.send_goal_async(goal)
-        send_future.add_done_callback(self._on_goal_response)
-        self.get_logger().info("after send_future")
+        send_future.add_done_callback(on_goal_response)
 
-        # goal_handle = send_future.result()
-        # if goal_handle is None or not goal_handle.accepted:
-        #     self.get_logger().error("Goal rejected by Nav2")
-        #     self.current_goal_handle = None
-        #     self.current_nav_status = NAV_STATUS.STATUS_UNKNOWN
-        #     return
+        if not done_event.wait(timeout=120.0):
+            self.get_logger().error("Timed out waiting for nav result")
+            return False
 
-        # self.current_goal_handle = goal_handle
-        # self.current_nav_status = NAV_STATUS.STATUS_EXECUTING
+        return nav_result["success"]
+    
+    # def pub_msg(
+    #     self, goal_point: np.ndarray, orientation_yaw: Optional[float] = 0
+    # ) -> None:
+    #     # self.update_controller()
+    #     # self.get_logger().info("pub_msg")
+    #     # self.get_logger().info(goal_point)
 
-        # self.get_logger().info("pub_msg")
-        # self.get_logger().info(self.current_nav_status)
+    #     msg = self.form_msg(goal_point, orientation_yaw=orientation_yaw)
+
+    #     # self.pub.publish(msg) # not used in ros2
+    #     # Wait for Nav2 action server
+    #     if not self.nav_action_client.wait_for_server(timeout_sec=5.0):
+    #         self.get_logger().error(f"Nav2 action server not available: {self.action_name}")
+    #         return
+
+    #     goal = NavigateToPose.Goal()
+    #     goal.pose = msg
+    #     # self.get_logger().info("in pub_msg")
+    #     self.get_logger().info("The gaol is {}".format(goal.pose))
+    #     # Track goal id locally
+    #     self.current_goal_uuid = uuid.uuid4()
+
+    #     # Send goal
+    #     send_future = self.nav_action_client.send_goal_async(goal)
+    #     self.get_logger().info("after send_future")
+
+    #     rclpy.spin_until_future_complete(self, send_future)
+    #     goal_handle = send_future.result()
+
+    #     if goal_handle is None:
+    #         self.get_logger().error("Goal response future returned None")
+    #         return False
+
+    #     if not goal_handle.accepted:
+    #         self.get_logger().warn("Goal was rejected by server")
+    #         return False
+
+    #     self.get_logger().info("Goal accepted")
+
+    #     result_future = goal_handle.get_result_async()
+    #     rclpy.spin_until_future_complete(self, result_future)
+
+    #     result_wrap = result_future.result()
+    #     if result_wrap is None:
+    #         self.get_logger().error("Navigation result future returned None")
+    #         return False
+
+    #     status = result_wrap.status
+    #     result = result_wrap.result
+    #     self.get_logger().info(f"Nav result status={status}, result={result}")
+
+    #     return status == GoalStatus.STATUS_SUCCEEDED
+
 
     def _on_goal_response(self, future):
         goal_handle = future.result()
@@ -555,16 +637,20 @@ class GraphNavNode(Node):
         if cancel_future.result() is not None:
             self.get_logger().info("Cancel request accepted")
         self.get_logger().info("cancel_goal:")
-        self.get_logger().info(self.current_nav_status)
+        self.get_logger().info(f"The goal should be canceled and result={self.current_nav_status}")
 
 
 def main():
     rclpy.init()
     nav = GraphNavNode()
-    rclpy.spin(nav)
+    # rclpy.spin(nav)
+    # nav.destroy_node()
+    # rclpy.shutdown()
+    executor = MultiThreadedExecutor()
+    executor.add_node(nav)
+    executor.spin()
     nav.destroy_node()
     rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

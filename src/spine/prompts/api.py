@@ -93,3 +93,5 @@ def answer(answer: str) -> None:
 
 def clarify(question: str) -> None:
     """Ask for clarification. Only ask if the instruction is too vague to make a plan."""
+
+### add new functions here 
