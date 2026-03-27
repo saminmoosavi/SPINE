@@ -376,6 +376,7 @@ class GraphHandler:
         attrs: Dict[str, Any] = {},
     ) -> None:
         assert "type" in attrs and "coords" in attrs
+        print("HERE IS update_with_node")
         self.graph.add_node(node, **attrs)
         for edge in edges:
             c1 = self.graph.nodes[node]["coords"]
@@ -384,6 +385,7 @@ class GraphHandler:
             self.graph.add_edge(
                 node, edge, type=self.graph.nodes[node]["type"], weight=dist
             )
+
 
     def update_with_edge(self, edge: Tuple[str, str], attrs: Dict[str, Any] = {}):
         self.graph.add_edge(edge[0], edge[1], **attrs)

@@ -1,7 +1,7 @@
 {
   "objects": [
     { "name": "O1",  "coords": [0.10, 0.10] },
-    { "name": "O2",  "coords": [5.10, 5.30] },
+    { "name": "O2",  "coords": [0.5, 1.30] },
     { "name": "O3",  "coords": [10.18, 10.48] },
     { "name": "O4",  "coords": [13.28, 13.70] },
     { "name": "O5",  "coords": [20.50, 20.80] },

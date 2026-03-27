@@ -34,7 +34,7 @@ class FrontierExtractor:
 
         # create sample grid
         self.costmap_resolution = 0.2
-        self.costmap_resolution = 0.5
+        # self.costmap_resolution = 0.5
       
         self.default_costmap_shape = (10, 10)
         self.costmap_step_size = self.default_costmap_shape[0] * 0.2 / 4
@@ -165,7 +165,7 @@ class FrontierExtractor:
             pt = ((rot.T @ (pt - pos)[..., np.newaxis])[..., 0] / resolution).astype(
                 np.int32
             )
-        print(f" world to costmap {pt.squeeze()[::-1]}")
+        # print(f" world to costmap {pt.squeeze()[::-1]}")
         return pt.squeeze()[::-1]  # flip (x,y) to put in image coords for costmap
 
     def is_pt_in_costmap(self, pt: np.ndarray, costmap_info: CostMapWithInfo) -> bool:
@@ -247,9 +247,9 @@ class FrontierExtractor:
         self.logger.debug(
             f"\tpt: {pt_in_costmap}, value: {~costmap_info.map[pt_in_costmap[0], pt_in_costmap[1]].astype(bool)}"
         )
-        print(
-            f"\tpt: {pt_in_costmap}, value: {~costmap_info.map[pt_in_costmap[0], pt_in_costmap[1]].astype(bool)}"
-        )
+        # print(
+        #     f"\tpt: {pt_in_costmap}, value: {~costmap_info.map[pt_in_costmap[0], pt_in_costmap[1]].astype(bool)}"
+        # )
 
         return ~costmap_info.map[pt_in_costmap[0], pt_in_costmap[1]].astype(bool)
 
@@ -361,7 +361,7 @@ class FrontierExtractor:
         - closest fit frontier
         - is at obstacle boundary
         """
-        print("We are here!")
+        # print("We are here!")
         current_loc = self.region_node_locs[
             np.where(current_location == self.region_nodes)
         ]
@@ -379,7 +379,7 @@ class FrontierExtractor:
 
         # line search for farthest free point
         for scale_factor in range(1, n_samples):
-            print(f"in scale factor {n_samples}")
+            # print(f"in scale factor {n_samples}")
 
             exploration_target = (
                 pointing_vector * (scale_factor / n_samples) + current_loc
@@ -421,10 +421,10 @@ class FrontierExtractor:
             success = True
 
             self.logger.debug(f"\tchecking point: {exploration_target} free")
-            print(f"\tchecking point: {exploration_target} free")
+            # print(f"\tchecking point: {exploration_target} free")
 
         if scale_factor <= 1:  # this means no points were free
-            print(" no points were free")
+            # print(" no points were free")
             return (
                 False,
                 best_fit_point,

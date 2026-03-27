@@ -34,16 +34,6 @@ def unit_vector(vector):
 
 
 class NAV_STATUS(enum.Enum):
-    # NONE = 0
-    # GOAL_IN_PROGRESS = 1
-    # GOAL_CANCELED = 2
-    # GOAL_COMPLETE = 3
-    # FAILED_TO_FIND_PLAN = 4
-    # REJECTED = 5
-    # PREMPTING = 6
-    # RECALLING = 7
-    # RECALLED = 8
-    # LOST = 9
 
     STATUS_UNKNOWN=0
     STATUS_ACCEPTED=1
@@ -151,6 +141,9 @@ class GraphNavNode(Node):
 
     def add_node_cbk(self, req: AddNode.Request, resp: AddNode.Response) -> AddNode.Response:
         # TODO should this be flipped
+        self.get_logger().info(
+        f"ENTER add_node_cbk node_id={req.node_id}, x={req.x}, y={req.y}, neighbors={req.neighbors}"
+        )
         attrs = {"coords": [req.x, req.y], "type": req.type}
         self.graph.update_with_node(node=req.node_id, attrs=attrs, edges=req.neighbors)
         self.get_logger().debug("updating graph with coords")
@@ -410,16 +403,18 @@ class GraphNavNode(Node):
         #     resp.message = msg
         #     return resp
 
-        self.pub_msg(goal_point=goal_point, orientation_yaw=goal_angle)
-        success = self.wait_for_nav_success()
-        success = self.wait_for_goal_reached(
-            goal_point=goal_point,
-            goal_angle=goal_angle,
-            tol=self.goal_reached_lin_tol,
-            angle_tol=self.object_goal_angle_tol,
-        )
+        success = self.pub_msg(goal_point=goal_point, orientation_yaw=goal_angle)
+        # success = self.wait_for_nav_success()
+        # success = self.wait_for_goal_reached(
+        #     goal_point=goal_point,
+        #     goal_angle=goal_angle,
+        #     tol=self.goal_reached_lin_tol,
+        #     angle_tol=self.object_goal_angle_tol,
+        # )
         resp.success = bool(success)
         resp.message = "reached goal" if success else "failed"
+        self.get_logger().info("At the end of object_goal_cbk {}".format(success))
+
         return resp
 
     def region_goal_cbk(self, goal: Task.Request, resp: Task.Response) -> Task.Response:
