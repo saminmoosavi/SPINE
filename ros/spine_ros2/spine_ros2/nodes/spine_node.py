@@ -60,7 +60,7 @@ class SPINENode(Node):
         graph = self.declare_parameter("init_graph").value
         full_graph = self.declare_parameter("full_graph").value
         self.current_location = self.declare_parameter("init_location", "").value
-        self.use_sim_perception = self.declare_parameter("sim_perception", True).value
+        self.use_sim_perception = self.declare_parameter("sim_perception", False).value  ### 
         self.object_track_topic = self.declare_parameter(
             "object_tracks", f"/{self.ns}/tracks"
         ).value
@@ -1057,7 +1057,7 @@ class SPINENode(Node):
                     self.get_logger().info(f"inside exted_map loop the arg is {arg} and current location {self.current_location}")
                     frontiers, is_at_obstacle = self.frontier_extractor.get_frontiers(
                         proposed_frontier=arg,
-                        current_location=self.current_location,
+                        current_location= self.current_location,
                     )
 
 
