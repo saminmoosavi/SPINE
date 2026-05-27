@@ -24,7 +24,9 @@ setup(
             'tracker_with_yolo = spine_ros2.nodes.tracker_with_yolo:main' ,
             'graph_nav_node = spine_ros2.nodes.graph_nav_node:main',
             'spine_node = spine_ros2.nodes.spine_node:main',
-            'graph_service = spine_ros2.nodes.graph_service:main',   
+            'graph_service = spine_ros2.nodes.graph_service:main', 
+            'stl_navigation = spine_ros2.nodes.stl_navigation_node:main',
+            'factory_world_visualizer = spine_ros2.nodes.factory_world_visualizer:main',
         ],
     },
 )

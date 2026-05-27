@@ -3,13 +3,11 @@ import copy
 from queue import Queue
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
-import threading
+
 import json
 import numpy as np
 import time
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
-from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from spine.class_llm import ClassLLM
 from spine.spine import SPINE
@@ -60,7 +58,7 @@ class SPINENode(Node):
         graph = self.declare_parameter("init_graph").value
         full_graph = self.declare_parameter("full_graph").value
         self.current_location = self.declare_parameter("init_location", "").value
-        self.use_sim_perception = self.declare_parameter("sim_perception", False).value  ### 
+        self.use_sim_perception = self.declare_parameter("sim_perception", True).value
         self.object_track_topic = self.declare_parameter(
             "object_tracks", f"/{self.ns}/tracks"
         ).value
@@ -100,24 +98,14 @@ class SPINENode(Node):
         # #
         # for graph navigation
         # #
-        self.callback_group = ReentrantCallbackGroup()
-
-        self.navigate_to_region_srv_proxy = self.create_client(
-            Task, 
-            f"/{self.ns}/region_goal", 
-            callback_group=self.callback_group,
+        self.navigate_to_region_srv_proxy = self.create_client(Task,
+            f"/{self.ns}/graph_nav_node/region_goal" 
         )
-        # self.navigate_to_region_srv_proxy = self.create_client(Task,
-        #     f"/{self.ns}/region_goal" 
-        # )
-
         self.inspect_object_srv_proxy =self.create_client(Task,
-            f"/{self.ns}/object_goal",
-            callback_group=self.callback_group,
+            f"/{self.ns}/graph_nav_node/object_goal"
         )
         self.add_node_srv_proxy =self.create_client(AddNode,
-            f"/{self.ns}/add_node",
-            callback_group=self.callback_group,
+            f"/{self.ns}/graph_nav_node/add_node"
         )
         self.task_srv = self.create_service(Task, "mission", self.task_cbk)
         self.nav_srv =self.create_service( Task, "nav_to_region",self.nav_to_region_cbk)
@@ -480,110 +468,57 @@ class SPINENode(Node):
         filtered_costmap_msg.data = m.astype(np.int8).flatten().tolist()
         self.filtered_costmap_pub.publish(filtered_costmap_msg)
 
-    def call_add_node_blocking(self, req, timeout_s: float = 10.0):
-        done_event = threading.Event()
-        result_holder = {
-            "response": None,
-            "exception": None,
-        }
-
-        def _on_done(future):
-            try:
-                result_holder["response"] = future.result()
-            except Exception as e:
-                result_holder["exception"] = e
-            finally:
-                done_event.set()
-
-        future = self.add_node_srv_proxy.call_async(req)
-        future.add_done_callback(_on_done)
-
-        self.get_logger().info(f"sent add_node request for {req.node_id}")
-
-        if not done_event.wait(timeout=timeout_s):
-            self.get_logger().error(
-                f"Timeout waiting for add_node response for {req.node_id}"
-            )
-            return None
-
-        if result_holder["exception"] is not None:
-            self.get_logger().error(
-                f"add_node service exception for {req.node_id}: {result_holder['exception']}"
-            )
-            return None
-
-        return result_holder["response"]
-
     def add_frontiers_to_graph(
         self, frontiers: np.ndarray, debug: Optional[bool] = False
-    ):
-        self.get_logger().info("in the add frontiers start")
+    ) -> Tuple[List[FrontierNode], bool]:
+        """Compute frontiers and add them to graph.
 
-        if len(frontiers) == 0:
-            self.get_logger().info("no frontiers to add")
-            return None
+        Parameters
+        ----------
+        debug : Optional[bool], optional
+            If true, don't actually update graph. Just get
+            update message, by default False
 
-        last_response = None
-        last_new_node = None
-
+        Returns
+        -------
+        - Update message in LLM API.
+        - frontier (assumes one currently)
+        - is frontier at obstacle boundary
+        """
         for frontier in frontiers:
             region_id = frontier.id
             region_loc = frontier.location
             neighbor_ids = frontier.neighbors
 
             if not debug:
-                self.get_logger().info("in the add frontiers not debug")
-
                 self.graph.update_with_node(
                     node=region_id,
                     edges=neighbor_ids,
                     attrs={"coords": region_loc, "type": "region"},
                 )
 
-                req = get_add_node_msg(
-                    node_id=region_id,
-                    x=region_loc[0],
-                    y=region_loc[1],
-                    type="region",
-                    neighbors=neighbor_ids,
-                )
-                self.get_logger().info(f"in the add frontiers request {req}")
-
-                last_response = self.call_add_node_blocking(req, timeout_s=10.0)
-
-                if last_response is None:
-                    self.get_logger().error(
-                        f"add_node returned no response for {region_id}"
+                response = self.add_node_srv_proxy(
+                    get_add_node_msg(
+                        node_id=region_id,
+                        x=region_loc[0],
+                        y=region_loc[1],
+                        type="region",
+                        neighbors=neighbor_ids,
                     )
-                    return None
-
-                self.get_logger().info(
-                    f"in the add frontiers service response {last_response}"
                 )
+                assert response.success
 
-                if not last_response.success:
-                    self.get_logger().error(
-                        f"add_node failed for {region_id}: {last_response}"
-                    )
-                    return last_response
-
-            last_new_node = {
+            new_node = {
                 "name": region_id,
                 "type": "region",
                 "coords": f"[{region_loc[0]:0.1f}, {region_loc[1]:0.1f}]",
             }
             new_connections = [[region_id, c] for c in neighbor_ids]
-
             self.llm_prompt_former.update(
-                new_nodes=[last_new_node],
-                new_connections= new_connections,
+                new_nodes=[new_node], new_connections=new_connections
             )
 
-        self.get_logger().info(f"in the add frontiers new_node {last_new_node}")
         self.graph_viz.update_graph(self.graph)
-
-        return last_response
-
 
     def try_add_edges(self, node_id, coords, node_type) -> Tuple[List[str], List[str]]:
         new_neighbors = self.frontier_extractor.get_missing_neighbors(node_id, coords)
@@ -677,93 +612,46 @@ class SPINENode(Node):
 
         return resp
 
-
     def graph_nav_to_region(self, goal_region: str) -> bool:
         if self.current_location == goal_region:
             return True
 
-        nav_success = False
+        # if a current path ends up being blocked, keep trying until there
+        # are no more paths to exhaust
         current_iter = 0
-        last_attempted_node = None
-
-        # keep trying while a path still exists
         while self.graph.path_exists_from_current_loc(goal_region):
             path = self.graph.get_path(self.current_location, goal_region)
             self.get_logger().info(f"navigating along path: {path}")
 
             nav_success = True
-
             for node in path:
-                self.get_logger().info(f"trying to reach: {node}")
-
                 if self.current_location == node:
                     continue
+                response = self.navigate_to_region_srv_proxy.call_async(str(node)) #### Service what type it 
+                nav_success = response.success
 
-                last_attempted_node = node
+                self.get_logger().info(f"step {node} in {path} successful: {nav_success}")
 
-                req = Task.Request()
-                req.task = str(node)
-                self.get_logger().info(f"the next task is: {req}")
-                # Send navigation request
-                # future = self.navigate_to_region_srv_proxy.call_async(req)
-
-                # Wait for service response
-                future = self.navigate_to_region_srv_proxy.call_async(req)
-
-                ### blocker test
-                self.get_logger().info(f"sent request for {node}")
-
-                start_time = self.get_clock().now()
-                timeout_s = 10.0
-
-                while rclpy.ok() and not future.done():
-                    elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
-                    if elapsed > timeout_s:
-                        self.get_logger().error(f"Timeout waiting for response for {node}")
-                        break
-                    rclpy.spin_once(self, timeout_sec=0.1)
-
-                self.get_logger().info(f"future.done() = {future.done()} for node {node}")
-
-                if future.done():
-                    response = future.result()
-                    self.get_logger().info(f"response = {response}")
-               
-                if response is not None and response.success:
-                    self.get_logger().info(f"step {node} in {path} successful: {response}")
-                    self.get_logger().info(f"updating location with: {node}")
+                if nav_success:
                     self._update_location(node)
-
-            # If path failed, remove bad edge and try another path
-            self.get_logger().info("finished all nodes in the path")
-            if not nav_success:
-                if last_attempted_node is not None:
-                    self.get_logger().info(
-                        f"Removing edge between {self.current_location} and {last_attempted_node}"
-                    )
-                    self.graph.remove_edge(self.current_location, last_attempted_node)
+                else:
+                    self.graph.remove_edge(self.current_location, node)
                     self.llm_prompt_former.update(
-                        removed_connections=[[self.current_location, last_attempted_node]]
+                        removed_connections=[[self.current_location, node]]
                     )
 
+                    break
+
+            # try to return to last known location
+            if not nav_success:
                 self.get_logger().info(
                     f"could not traverse path. returning to {self.current_location}"
                 )
+                return_response = self.navigate_to_region_srv_proxy(
+                    self.current_location
+                )
 
-                return_req = Task.Request()
-                return_req.task = str(self.current_location)
-                return_future = self.navigate_to_region_srv_proxy.call_async(return_req)
-
-                while rclpy.ok() and not return_future.done():
-                    rclpy.spin_once(self, timeout_sec=0.1)
-
-                try:
-                    return_response = return_future.result()
-                except Exception as e:
-                    self.get_logger().error(f"Return service call failed: {e}")
-                    return_response = None
-
-                if return_response is None or not return_response.success:
+                if not return_response.success:
                     self.llm_prompt_former.update(
                         freeform_updates=[
                             f"could not return to {self.current_location}. Robot is likely stuck. Recommend stopping task."
@@ -775,21 +663,22 @@ class SPINENode(Node):
                 f"more paths: {self.graph.path_exists_from_current_loc(goal_region)}, current iter: {current_iter}"
             )
 
+            # TODO logic is hacky, but timeout just in case this gets stuck in a loop
+            # if nav success is true here, it means we got to the goal so we can break
             current_iter += 1
             if nav_success or current_iter >= 3:
                 break
 
+        # suggest exploration if there is no path in teh graph.
         if not nav_success:
             self.llm_prompt_former.update(
                 freeform_updates=[
-                    f"could not navigate between [{self.current_location}, {last_attempted_node}]. "
-                    f"Connection is likely blocked.\n"
+                    f"could not navigate between [{self.current_location}, {node}]. Connection is likely blocked.\n"
                     f"You may consider calling `extend_map` in the direction of your target region to try and find a new path."
                 ]
             )
 
         return nav_success
-    
 
     def parse_track_updates(self) -> List[str]:
         """ This is adding the graph
@@ -833,14 +722,15 @@ class SPINENode(Node):
                 edges=[track.parent],
                 attrs={"coords": track.pose[:2], "type": "object"},
             )
-            resp = get_add_node_msg(
+            response = self.add_node_srv_proxy(
+                get_add_node_msg(
                     node_id=node_id,
                     x=track.pose[0],
                     y=track.pose[1],
                     type="object",
                     neighbors=[track.parent],
                 )
-            response = self.add_node_srv_proxy.call(resp)
+            )
             assert response.success
 
     def _update_location(self, new_location: str) -> bool:
@@ -867,51 +757,12 @@ class SPINENode(Node):
             return ""
 
         self._update_location(nearest_region)
-        req = Task.Request()
-        req.task = str(node_name)
-        self.get_logger().info(f"the next task is: {req}")
-        future = self.inspect_object_srv_proxy.call_async(req)
-        ### blocker test
-        self.get_logger().info(f"sent request for {node_name}")
+        response = self.inspect_object_srv_proxy(node_name)
 
-        start_time = self.get_clock().now()
-        timeout_s = 10.0
-
-        while rclpy.ok() and not future.done():
-            elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
-            if elapsed > timeout_s:
-                self.get_logger().error(f"Timeout waiting for response for {node_name}")
-                break
-            rclpy.spin_once(self, timeout_sec=0.1)
-
-        self.get_logger().info(f"future.done() = {future.done()} for node {node_name}")
-
-        if future.done():
-            response = future.result()
-            self.get_logger().info(f"response = {response}")
-
-        ### qery vlm for inspection
         query = Query.Request()
         query.query = ascii(vlm_query)
 
-        future = self.query_scene_srv_proxy.call_async(query)
-
-        start_time = self.get_clock().now()
-        timeout_s = 10.0
-
-        while rclpy.ok() and not future.done():
-            elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
-            if elapsed > timeout_s:
-                self.get_logger().error(f"Timeout waiting for response for {query}")
-                break
-            rclpy.spin_once(self, timeout_sec=0.1)
-
-        self.get_logger().info(f"future.done() = {future.done()} for vlm query {query}")
-
-        if future.done():
-            answer = future.result()
-            self.get_logger().info(f"response = {answer}")
-        
+        answer = self.query_scene_srv_proxy(query)
         self.llm_prompt_former.update(
             attribute_updates=[{"name": node_name, "description": answer.answer}]
         )
@@ -938,34 +789,12 @@ class SPINENode(Node):
         str
             Updates formatted in LLM API (if any)
         """
-        self.get_logger().info("inside classify region")
-        req = Trigger.Request()
-
-        future = self.classify_scene_srv_proxy.call_async(req)
-
-        ### blocker test
-        self.get_logger().info(f"sent request for classify region")
-
-        start_time = self.get_clock().now()
-        timeout_s = 10.0
-
-        while rclpy.ok() and not future.done():
-            elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
-            if elapsed > timeout_s:
-                self.get_logger().error(f"Timeout waiting for response for classify region")
-                break
-            rclpy.spin_once(self, timeout_sec=0.1)
-
-        self.get_logger().info(f"future.done() = {future.done()} for node classify region")
-
-        if future.done():
-            region_cls = future.result()
-            self.get_logger().info(f"response = {region_cls}")
-            self.get_logger().info(f"scene classified to be {region_cls}")
+        region_cls = self.classify_scene_srv_proxy()
+        self.get_logger().info(f"scene classified to be {region_cls}")
 
         if region_cls != "unknown":
             self.graph.update_node_description(
-                region_node, description = region_cls.message
+                region_node, description=region_cls.message
             )
 
             self.llm_prompt_former.update(
@@ -1050,24 +879,19 @@ class SPINENode(Node):
             elif action == "extend_map":
                 # exploration is limited by costmap
                 # if the exploration goal is beyond costmap, we wil iterate untill we reach target
-                self.get_logger().info("inside exted_map")
                 closest_frontier_dist = np.inf
                 should_extend_map = True
                 while should_extend_map:
-                    self.get_logger().info(f"inside exted_map loop the arg is {arg} and current location {self.current_location}")
                     frontiers, is_at_obstacle = self.frontier_extractor.get_frontiers(
                         proposed_frontier=arg,
-                        current_location= self.current_location,
+                        current_location=self.current_location,
                     )
-
-
 
                     assert (
                         len(frontiers) <= 1
                     ), f"cannot handle more than one frontier atm"
 
                     if len(frontiers) == 0:
-                        self.get_logger().info(f"inside exted_map loop if frontier equal zero and {is_at_obstacle}")
                         should_extend_map = False
                         self.llm_prompt_former.update(
                             freeform_updates=[
@@ -1078,7 +902,7 @@ class SPINENode(Node):
                         break
 
                     frontier_dist = np.linalg.norm(frontiers[0].location - arg)
-                    self.get_logger().info(f"inside exted_ frontier ddis {frontier_dist}")
+
                     # if there are closer discovered regions, don't add
                     regions, locs = self.graph.get_region_nodes_and_locs()
 
@@ -1104,7 +928,6 @@ class SPINENode(Node):
                                     "If you have other primary goals, you should move onto those. Answering will end the task, so only call `answer()` and report findings once you are done will all tasks."
                                 ]
                             )
-                            self.get_logger().info("inside exted_map loop after llm update")
 
                     if should_break:
                         break
@@ -1186,21 +1009,17 @@ class SPINENode(Node):
                 explore_radius = arg[1]
 
                 response = self.graph_nav_to_region(region_target)
-                
                 if not response:
                     should_break = True
-                    self.get_logger().info("no response from explore region, breaking!")
                     break
 
                 current_location, success = self.graph.get_node_coords(
                     self.current_location
                 )
-                self.get_logger().info(f"current location {current_location}, and success {success}")
                 assert success
                 added_regions = []
 
                 if self.should_classify_region:
-                    self.get_logger().info("classifying region")
                     self.classify_region(self.current_location)
 
                 for x in [-explore_radius, 0, explore_radius]:
@@ -1221,10 +1040,7 @@ class SPINENode(Node):
                             self.add_frontiers_to_graph(frontiers)
                             added_regions.append(frontiers[0])
 
-                        self.get_logger().info(f"exploration target {exploration_target} frontier length {len(frontiers)}")
-
                 for new_region in added_regions:
-                    self.get_logger().info(f"adding new region with {new_region.id}")
                     action_updates.append(f"map_region({new_region.id})")
 
                     response = self.graph_nav_to_region(new_region.id)
@@ -1233,7 +1049,6 @@ class SPINENode(Node):
                         self.classify_region(new_region.id)
 
                 if len(added_regions) == 0:
-                    self.get_logger().info("no new region to be added")
                     self.llm_prompt_former.update(
                         freeform_updates=[
                             f"Calling explore_region({current_location}) did not yield any updates. "
@@ -1461,17 +1276,9 @@ class SPINENode(Node):
 def main():
     rclpy.init()
     planner = SPINENode()
-    executor = MultiThreadedExecutor()
-    executor.add_node(planner)
-    executor.spin()
     rclpy.spin(planner)
     planner.destroy_node()
     rclpy.shutdown()
 
-    # try:
-    #     executor.spin()
-    # finally:
-    #     planner.destroy_node()
-    #     rclpy.shutdown()
 if __name__ == "__main__":
     main()

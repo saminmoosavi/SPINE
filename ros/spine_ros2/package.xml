@@ -4,7 +4,7 @@
   <version>0.0.1</version>
   <description>ROS 2 wrapper for KumarRobotics SPINE semantic planner</description>
 
-  <maintainer email="saminmoosavi@yahoo.com">Samin</maintainer>
+  <maintainer email="saminmoosavi@yahoo.com">saminmoosavi</maintainer>
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
